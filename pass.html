@@ -1,32 +1,55 @@
 <html>
 <head>
 <style>
-body, textarea, input, button, a {
+html, body, table, textarea, input {
+	margin: 0;
+	font-size: 100%;
+} 
+body, textarea, input, a {
 	color: #ccc;
 	background-color: #000;
 	font-family: Fixedsys, monospace;
 	font-size: 100%;
 }
-textarea, input, button {
+textarea, input {
 	border: 1px solid #333;
-	font-size: 100%;
+}
+#text {
+	width: 100%;
+}
+#input_text {
+	width: 100%;
+	height: 100%;
 }
 </style>
 <script src="jquery.js"></script>
 <script src="triplesec.js"></script>
 </head>
 <body>
-<input type="password" id="pass">
-<input type="button" value="decrypt" id="decrypt">
-<br>
-<textarea rows="4" cols="100" id="text">
-</textarea>
-<br>
-<textarea rows="50" cols="100" id="input_text"></textarea>
-<br>
-<input type="button" value="encrypt" id="encrypt">
-<a href="https://gist.github.com/capr/faafcb47439cd6bde2ff/edit" target="_blank">go save it</a>
-<br>
+<table width=100% height=100% cellpadding="6">
+	<tr>
+		<td>
+			<input type="password" id="pass"><input type="button" value="decrypt" id="decrypt">
+		</td>
+	</tr>
+	<tr>
+		<td>
+			<textarea rows="2" id="text"></textarea>
+		</td>
+	</tr>
+	<tr>
+		<td height=100%>
+			<textarea id="input_text"></textarea>
+		</td>
+	</tr>
+	<tr>
+		<td>
+			<input type="button" value="encrypt" id="encrypt">
+			<a href="https://gist.github.com/capr/faafcb47439cd6bde2ff/edit" target="_blank">go save it</a>
+		</td>
+	</tr>
+</table>
+
 <script>
 
 function encrypt() {
