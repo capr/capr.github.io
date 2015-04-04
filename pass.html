@@ -41,7 +41,11 @@ function decrypt() {
 	)
 }
 
-local gist_url = 'https://gist.githubusercontent.com/capr/faafcb47439cd6bde2ff/raw/f8c90c03702c3c976d502c2445934a580dc06830/dump'
+local gist_url =
+	'https://gist.githubusercontent.com/capr/'+
+	'faafcb47439cd6bde2ff/raw/'+
+	'f8c90c03702c3c976d502c2445934a580dc06830/dump'
+
 function load_gist() {
 	$.get(gist_url, function(data) {
 		$('#text').html(data)
