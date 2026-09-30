@@ -2,42 +2,55 @@
 <html>
 <head>
 <base href="../www/">
-<script src=glue.js global></script>
+<script src=glue.js></script>
 <script src=ui.js></script>
-<script src=ui_validation.js></script>
+<script src=ui_field.js></script>
 <script src=ui_nav.js></script>
 <script src=ui_grid.js></script>
 <script src=ui_code_edit.js></script>
 <script src=webrtc.js></script>
 <script src=lezer.js></script>
-<!--
-NOTE: Setting the background color for the html element before declaring
-the <body> element prevents the body from rendering white for a split second
-(and thus flickering when refreshing the page). This happens only in Chrome.
--->
 <script>
 
-ui.load_font('tabler', 'icons/tabler-icons.woff2')
-ui.load_font('tabler_filled', 'icons/tabler-icons-filled.woff2')
-//ui.load_font('far'   , 'icons/fa-regular-400.woff2')
-//ui.load_font('fas'   , 'icons/fa-solid-900.woff2')
-//ui.load_font('fab'   , 'icons/fa-brands-400.woff2')
-//ui.load_font('lar'   , 'icons/la-regular-400.woff2')
-//ui.load_font('las'   , 'icons/la-solid-900.woff2')
-//ui.load_font('lab'   , 'icons/la-brands-400.woff2')
-//ui.load_font('remix' , 'icons/remixicon.woff2')
-//ui.load_font('mio'   , 'icons/material-icons-outlined.woff2')
-// ui.load_font('mono'  , 'fonts/jetbrains-mono-nl-regular.woff2')
-ui.load_font('mono', 'fonts/jetbrains-mono-nl-regular.woff2')
+const {
+	obj, json, json_arg, load, save,
+	random, clamp, min, max, floor, ceil, round,
+	time, assign, keys,
+	parse_date, format_kbytes, format_date,
+	listen,
+	pr,
+} = glue
 
-let demo_state = json_arg(load('demo_state')) ?? {}
-if (demo_state.theme)
-	ui.set_default_theme(demo_state.theme)
+// NOTE: Setting the background color for the html element by calling
+// ui.set_screen_theme() (also called when ui.js is loaded) before declaring
+// the <body> element prevents the body from rendering white for a split second
+// (and thus flickering when refreshing the page). This happens only in Chrome.
 
-ui.DEBUG      = demo_state.debug ?? true
-ui.TUI        = demo_state.tui   ?? false
-selected_demo = location.search.match('demo=([^&]+)')?.[1] ?? demo_state.demo ?? 'tabs'
-remote_demo   = location.search.match('remote=([^&]+)')?.[1]
+// ui.js requires these fonts but it doesn't load them by itself.
+ui.load_font('tabler'        , 'icons/tabler-icons.woff2')
+ui.load_font('tabler_filled' , 'icons/tabler-icons-filled.woff2')
+ui.load_font('mono'          , 'fonts/jetbrains-mono-nl-regular.woff2')
+
+ui.saved_state = json_arg(load('ui_saved_state')) ?? {}
+ui.save_state_delay = 0
+ui.save_unsaved_state = function(saved_state) {
+	save('ui_saved_state', json(saved_state))
+}
+let demo_toggle_field = ui.create_field({type: 'bool', not_null: true})
+ui.saved_value('btn_light'  , ui.screen_theme() == 'light', demo_toggle_field)
+ui.saved_value('btn_debug'  , true , demo_toggle_field)
+ui.saved_value('btn_tui'    , false, demo_toggle_field)
+ui.saved_value('btn_animate', false, demo_toggle_field)
+ui.set_screen_theme(ui.value('btn_light') ? 'light' : 'dark')
+
+ui.DEBUG      = ui.value('btn_debug')
+ui.DEBUG_PANE = true
+ui.TUI        = ui.value('btn_tui')
+ui.saved_value('demos_list', 'tabs')
+let url_demo = location.search.match('demo=([^&]+)')?.[1]
+if (url_demo)
+	attr(ui.saved_state, 'demos_list').value = url_demo
+let remote_demo = location.search.match('remote=([^&]+)')?.[1]
 
 ui.focus('demos_list')
 
@@ -45,77 +58,88 @@ ui.focus('demos_list')
 <body>
 <script>
 
-function save_demo_state(k, v) {
-	demo_state[k] = v
-	save('demo_state', json(demo_state))
-}
-
-let tuts = []
 let demos = []
 
-ui.shadow_style('light', 'demo_tooltip', 1, 1, 3, 0, 0, .8, 1)
-ui.shadow_style('dark',  'demo_tooltip', 1, 1, 3, 0, 0,  0, 1)
+ui.shadow_def('light', 'demo_tooltip', 1, 1, 3, 0, 0, .8, 1)
+ui.shadow_def('dark',  'demo_tooltip', 1, 1, 3, 0, 0,  0, 1)
 
-demos.frame = `
-ui.scrollbox('sb1')
-	function on_measure(axis) {
-		return 9000
-	}
-	function on_frame(a, i, x, y, w, h, cx, cy, cw, ch) {
-		ui.m(cx-x, cy-y)
-		ui.stack('bb1', 0, 'l', 't', 100, 100)
-			ui.bb(ui.hit('bb1') ? ':green' : ':red')
-		ui.end_stack()
-	}
-	ui.frame(on_measure, on_frame)
-ui.end_scrollbox()
-`
-
-slider1_v = 30
-demos.silder = `
+{
+let slider1_v = 30
+let slider2_v = .5
+let slider_demo_field = ui.create_field({
+	type: 'number',
+	min: 20,
+	max: 40,
+	decimals: 1,
+	slider_markers: false,
+})
+demos.silder = function() {
 ui.v(0, 0, 'c', 'c', 400)
 	ui.border(1, 'intense')
-	slider1_v = ui.slider('slider1', slider1_v, 20, 40, 1, false)
-	//if (p != null)
-	//	pr(p)
-	let p2 = ui.slider('slider2')
+	slider1_v = ui.slider('slider1', slider1_v, slider_demo_field)
+	slider2_v = ui.slider('slider2', slider2_v)
 ui.end_v()
-`
+}
+}
 
-dd_items = [
+{
+let dd_items = [
 	'item 1',
 	'item 2 that is a lot longer than the others',
 	'item 3',
+	'item 4 that is so damn long even the popup will clip it before '
+	+'it looks ridiculous',
 ]
-dd1_i = 1
-dd2_i = 0
-tb_dd_i = {}
-tb_input_text = {}
-demos.dropdown = `
-ui.v(1, ui.sp(), 'c', 'c')
-	ui.h(1, ui.sp())
-		ui.label('dd1', 'dd1 label')
-		dd1_i = ui.list_dropdown('dd1', dd_items, dd1_i)
-		ui.text('', 'or')
-		dd2_i = ui.list_dropdown('dd2', dd_items, dd2_i)
-		ui.text('', 'trail')
+let dd1_value = dd_items[1]
+let dd2_value = dd_items[0]
+let dd3_value = dd_items[1]
+let dd4_value = dd_items[0]
+let dropdown_field = ui.create_field({type: 'enum', enum_values: dd_items})
+demos.dropdown = function() {
+ui.p(ui.sp8())
+ui.v(1, ui.sp(), 's', 'c')
+	ui.mv(ui.sp8(), ui.sp2())
+	ui.h1('Inside text')
+	ui.h(0, ui.sp())
+		ui.label('dd1', 'dd1 label', 0)
+		dd1_value = ui.list_dropdown_inline(
+			'dd1', dd_items, dd1_value, dropdown_field)
+		ui.text('', 'or', 0)
+		dd2_value = ui.list_dropdown_inline(
+			'dd2', dd_items, dd2_value, dropdown_field)
+		ui.text('', 'trail', 0)
 	ui.end_h()
+	ui.mv(ui.sp8(), ui.sp2())
+	ui.h1('Inside forms')
+	ui.v_aligned(0, ui.sp(), 'l')
+		ui.h(0, ui.sp())
+			ui.label('dd3', 'dd3 label')
+			dd3_value = ui.list_dropdown(
+				'dd3', dd_items, dd3_value, dropdown_field)
+		ui.end_h()
+		ui.h(0, ui.sp())
+			ui.label('dd4', 'dd4 label')
+			dd4_value = ui.list_dropdown(
+				'dd4', dd_items, dd4_value, dropdown_field)
+		ui.end_h()
+	ui.end_v_aligned()
 ui.end_v()
-`
+}
+}
 
+{
 let cal1_ranges = [
 	{from: 0, to: 1},
 	{from: 0, to: 1},
 ]
 let cal_sel_days = []
-cal1_day = null
-demos.calendar = `
+let cal1_day = null
+demos.calendar = function() {
 ui.m(ui.em(2))
 ui.h(1, ui.em())
 	cal1_day = ui.calendar('cal1', cal1_day, cal1_ranges, 0, 'l', 's')
-	let ev = ui.consume('cal1', 'item_picked')
-	if (ev)
-		cal_sel_days.push(ev.day)
+	if (ui.dropdown_picked('cal1'))
+		cal_sel_days.push(cal1_day)
 	ui.sb('cal1_sb')
 		ui.v(1, ui.sp05(), 'l', 't')
 		for (let day of cal_sel_days)
@@ -123,37 +147,48 @@ ui.h(1, ui.em())
 		ui.end_v()
 	ui.end_sb()
 ui.end_h()
-`
-
-radio_sel_i = 0
-demos.radio = `
-ui.v(0, ui.sp2(), 'c', 'c')
-for (let i = 0; i < 5; i++) {
-	ui.h(0, ui.sp(), 'c', 'c')
-		radio_sel_i = ui.radio('radio'+i, 'radio_group1', i, radio_sel_i)
-		ui.label('radio'+i, 'Radio '+i)
-	ui.end_h()
 }
-ui.end_v()
-`
+}
 
-toggle1_on = false
-demos.toggle = `
+{
+let radio_items = ['Radio 0', 'Radio 1', 'Radio 2', 'Radio 3', 'Radio 4']
+let radio_value = radio_items[0]
+demos.radio = function() {
+ui.v(0, ui.sp2(), 'c', 'c')
+radio_value = ui.radio_list('radio_list1', radio_items, radio_value)
+ui.end_v()
+}
+}
+
+{
+let toggle1_on = false
+demos.toggle = function() {
 ui.h(0, ui.sp(), 'c', 'c')
 	toggle1_on = ui.toggle('toggle1', toggle1_on)
 	ui.label('toggle1', 'Toggle me!')
 ui.end_h()
-`
+}
+}
 
-cb1_checked = false
-demos.checkbox = `
-ui.h(0, ui.sp(), 'c', 'c')
-	cb1_checked = ui.checkbox('cb1', cb1_checked)
-	ui.label('cb1', 'Check me out!')
-ui.end_h()
-`
+{
+let cb1_checked = false
+let cb2_checked = true
+demos.checkbox = function() {
+ui.v(0, ui.sp2(), 'c', 'c')
+	ui.h(0, ui.sp(), 'l', 'c')
+		cb1_checked = ui.checkbox('cb1', cb1_checked)
+		ui.label('cb1', 'Check me out!')
+	ui.end_h()
+	ui.h(0, ui.sp(), 'l', 'c')
+		cb2_checked = ui.checkbox('cb2', cb2_checked)
+		ui.label('cb2', 'Check me out too!')
+	ui.end_h()
+ui.end_v()
+}
+}
 
-tabs1 = [
+{
+let tabs1 = [
 	{id: 'tab1', label:'Tab 1'},
 	{id: 'tab2', label:'Tab 2 looong'},
 	{id: 'tab3', label:'Tab 3'},
@@ -161,7 +196,7 @@ tabs1 = [
 	{id: 'tab5', label:'Tab 5'},
 	{id: 'tab6', label:'Tab 6'},
 ]
-demos.tabs = `
+demos.tabs = function() {
 ui.m(ui.em(5))
 ui.stack('', 1, 's', 'c')
 	//ui.p(1)
@@ -176,9 +211,11 @@ ui.stack('', 1, 's', 'c')
 	ui.end_v()
 	//ui.border(1, 'intense')
 ui.end_stack()
-`
+}
+}
 
-demos.menu = `
+{
+demos.menu = function() {
 ui.m(ui.em(5))
 ui.menu('menu1', [
 	{id: 'item1', label: 'Item 1', shortcut: 'Ctrl + F'},
@@ -194,96 +231,19 @@ ui.menu('menu1', [
 		{id: 'item3.2', label: 'Item 3.2'},
 	]},
 ], 'it', '[')
-`
+}
+}
 
-list1_items = []
-list1_i = 0
+{
+let list1_items = []
 for (let i = 1; i <= 1000; i++)
 	list1_items.push('Item '+i)
-demos.list = `
+let list1_value = list1_items[0]
+demos.list = function() {
 ui.sb('list1_sb', 1, null, null, 'c', 'c', 100, 300)
-	list1_i = ui.list('list1', list1_items, list1_i)
+	list1_value = ui.list('list1', list1_items, list1_value)
 ui.end_sb()
-`
-
-// grid
-
-{
-let fields = [{name: 'id', align: 'right', w: 40}]
-let rows = []
-for (let i = 1; i < 100; i++)
-	fields.push({
-		name: 'c'+i, label: 'Field No. '+i, w: 40,
-		align: i % 2 ? 'right' : 'left',
-	})
-for (let j = 1; j < 100; j++) {
-	let row = [j]
-	for (let i = 1; i <= fields.length; i++)
-		row.push('Cell '+j+','+i)
-	rows.push(row)
 }
-ui.rowsets.grid = {
-	pk: 'id', can_change_rows: false,
-	fields: fields,
-	rows: rows,
-}
-demos.grid = `
-ui.m(ui.em(2))
-ui.stack()
-	ui.grid('grid1', {rowset_name: 'grid'})
-ui.end_stack()
-`
-}
-
-{
-function starts_with_a(s) {
-	return s.lower().starts('a') || 'Name must start with "A"'
-}
-let fields = [
-	{name: 'id'        , w:  80, min_w:  30, type: 'number', editable: false},
-	{name: 'index'     , w:  50, type: 'number', editable: false},
-	{name: 'active'    , w:  30, type: 'bool', true_text: 'x', false_text: ''},
-	{name: 'name'      , w: 150, min_w:  50, max_w: 400, validate: starts_with_a, filter_by: true},
-	{name: 'parent_id' , w:  50, min_w:  50, type: 'number', allow_null: true, editable: false, focusable: false},
-	{name: 'random_num', w: 130, allow_null: true, type: 'number', text: 'Random Number'},
-	{name: 'date'      , w: 120, allow_null: true, type: 'date', filter_by: true},
-]
-let rows = []
-for (let i = 0; i <= 10000; i++) {
-	let id         = i
-	let name       = 'record '+i
-	let parent_id  = i > 4 ? (i-1) % 5 : null
-	let random_num = floor(random() * 1e9)
-	let random_date = clamp(i * 24 * 3600 * 10, 0, time(3000, 0))
-	let active = i % 5 == 0
-	let row = [id, id, active, name, parent_id, random_num, random_date]
-	row.focusable = true // i % 100 >= 85
-	rows.push(row)
-}
-ui.rowsets.tree = {
-	fields: fields,
-	rows: rows,
-	pk: 'id',
-	parent_col: 'parent_id',
-	index_col: 'index',
-}
-demos.treegrid = `
-ui.m(ui.em(2))
-ui.stack()
-	ui.grid('treegrid', {
-		rowset_name: 'tree',
-		order_by: 'active name:desc',
-		//tree_col: 'name',
-		//can_edit: false,
-		can_change_header_visibility: true,
-		//can_focus_cells: false,
-		//order_by: 'parent_id name:desc',
-		can_move_rows: true,
-		//enter_edit_on_click_focused: false,
-		//can_change_parent: false,
-	})
-ui.end_stack()
-`
 }
 
 {
@@ -325,8 +285,8 @@ ui.rowsets.food = {
 	rows: rows,
 	pk: 'id',
 }
-grid_state = {}
-demos.grid_groups = `
+let grid_state = {}
+demos.grid_groups = function() {
 ui.m(ui.em(2))
 ui.stack()
 	ui.grid('groups_grid', {
@@ -350,7 +310,7 @@ ui.stack()
 		//can_change_parent: false,
 	})
 ui.end_stack()
-`
+}
 }
 
 {
@@ -378,7 +338,8 @@ let fields = [
 	{name: 'url'      , w: 160, type: 'url'},
 	{name: 'phone'    , w: 120, type: 'phone'},
 	{name: 'email'    , w: 170, type: 'email'},
-	{name: 'password' , w: 110, type: 'password'},
+	{name: 'password' , w: 110, type: 'password', min_len: 8,
+		conditions: 'lower upper digit symbol'},
 	{name: 'secret'   , w: 140, type: 'secret_key'},
 	{name: 'pubkey'   , w: 140, type: 'public_key'},
 	{name: 'privkey'  , w: 140, type: 'private_key'},
@@ -386,14 +347,38 @@ let fields = [
 	{name: 'action'   , w:  90, type: 'button'},
 	{name: 'grower_id', w: 110, type: 'number', label: 'Grower',
 		lookup_rowset_name: 'grower', display_col: 'name'},
+	{name: 'text'       , w: 120, label: 'Text'},
+	{name: 'text_r'     , w: 120, label: 'Text R'},
+	{name: 'status_r'   , w:  90, type: 'enum', label: 'Status R',
+		enum_values: 'open closed pending',
+		enum_labels: {open: 'Open', closed: 'Closed', pending: 'Pending'},
+		align: 'right',
+	},
+	{name: 'enum_toggle', w:  90, type: 'enum', label: 'Enum toggle',
+		enum_values: 'one two three'},
+	{name: 'enum_list'  , w: 120, type: 'enum_list', label: 'Enum list',
+		enum_values: 'one two three'},
+	{name: 'enum_list2' , w: 120, type: 'enum_list', label: 'Enum list 2',
+		enum_values: 'one two three'},
+	{name: 'radio'      , w:  90, type: 'enum', label: 'Radio',
+		enum_values: ['Radio 1', 'Radio 2', 'Radio 3']},
+	{name: 'num_slider' , w: 100, type: 'number', label: 'Number slider',
+		min: 1000, max: 9000, slider_min: 0, slider_max: 10000, scale: 100,
+		decimals: 2},
+	{name: 'slider'     , w: 100, type: 'number', label: 'Slider',
+		min: 2000, max: 4000, slider_min: 0, slider_max: 10000, scale: 100,
+		decimals: 2, slider_markers: false},
+	{name: 'active2'    , w:  50, type: 'bool', label: 'Checkbox 2'},
+	{name: 'toggle'     , w:  50, type: 'bool', label: 'Toggle'},
+	{name: 'toggle2'    , w:  50, type: 'bool', label: 'Toggle 2'},
 	{name: 'parent_id', type: 'number', internal: true},
 ]
 let rows = [
-	[1, 1234.5  , 800        ,   1234, time(2024,1,15), time(2024,1,15,9,30), time(2031,6,1)     , 8*3600+30*60 , 3725  , true , 'open'   , ['red', 'urgent'], '#e03131'                , 2500, 'plus'        , {place_id: 'p1', description: '1600 Amphitheatre Pkwy'}, 'https://example.com', '+1 555 0100', 'a@example.com', 'hunter2'      , 'sk_live_abc123' , 'ssh-rsa AAAAB3Nz', '-----BEGIN KEY---', 'name'   , null, 1, null],
-	[2, 42      , 5_000_000  ,  98765, time(2024,6,1) , time(2024,6,1,14,0) , time(2032,1,1)     , 13*3600+15*60, 90000 , false, 'pending', ['blue']         , '#2e8b57'                , 6000, 'check'       , 'Just a description, no pin'                             , 'example.org'        , '555-0101'   , 'b@example.org', 'correct-horse', 'sk_live_def456' , 'ssh-ed25519 AAAA', '-----BEGIN KEY---', 'ctime'  , null, 2, 1],
-	[3, 0       , 3_200_000_000, 2000000, time(2024,12,31), time(2024,12,31,23,59), time(2037,12,31), 0            , 0     , true , 'closed' , ['green', 'a', 'b'], '#1e90ff'                , 10000, 'arrow_up'   , {place_id: 'p3', description: 'No pin greyed out below'}, 'http://sub.example.com/path', '555-0102', 'c@example.com', 's3cr3t'       , 'sk_live_ghi789' , 'ssh-rsa AAAAB3Nz', '-----BEGIN KEY---', 'id'     , null, 3, 1],
-	[4, -12.75  , 60         ,      7, time(2000,1,1) , time(2000,1,1,0,1)  , time(1970,1,2)     , 23*3600+59*60 , 61   , false, 'open'   , []               , '#111111'                , 0   , 'caret_right' , {description: 'Object without a place_id'}               , 'ftp://files.example.com', '555-0103', 'd@example.com', 'pw'           , 'sk_live_jkl012' , 'ssh-dss AAAAB3Nz', '-----BEGIN KEY---', 'status' , null, 1, 3],
-	[5, null    , null       ,   null, null           , null                , null               , null          , null , null , null     , null             , null                     , null, null          , null                                                       , null                 , null         , null           , null          , null             , null              , null              , null     , null, null, 4],
+	[1, 1234.5  , 800        ,   1234, time(2024,1,15), time(2024,1,15,9,30), time(2031,6,1)     , 8*3600+30*60 , 3725  , true , 'open'   , ['red', 'urgent'], '#e03131'                , 2500, 'plus'        , {place_id: 'p1', description: '1600 Amphitheatre Pkwy'}, 'https://example.com', '+1 555 0100', 'a@example.com', 'hunter2'      , 'sk_live_abc123' , 'ssh-rsa AAAAB3Nz', '-----BEGIN KEY---', 'name'   , null, 1, 'Hello1 Hello1', 'Hello2 Hello2', 'pending', 'one'  , 5, 2, 'Radio 1', 2500, 3000, false, false, true , null],
+	[2, 42      , 5_000_000  ,  98765, time(2024,6,1) , time(2024,6,1,14,0) , time(2032,1,1)     , 13*3600+15*60, 90000 , false, 'pending', ['blue']         , '#2e8b57'                , 6000, 'check'       , 'Just a description, no pin'                             , 'example.org'        , '555-0101'   , 'b@example.org', 'correct-horse', 'sk_live_def456' , 'ssh-ed25519 AAAA', '-----BEGIN KEY---', 'ctime'  , null, 2, 'Lorem ipsum'  , 'Dolor sit'    , 'open'   , 'two'  , 2, 5, 'Radio 2', 5000, 2500, true , true , false, 1],
+	[3, 0       , 3_200_000_000, 2000000, time(2024,12,31), time(2024,12,31,23,59), time(2037,12,31), 0            , 0     , true , 'closed' , ['green', 'a', 'b'], '#1e90ff'                , 10000, 'arrow_up'   , {place_id: 'p3', description: 'No pin greyed out below'}, 'http://sub.example.com/path', '555-0102', 'c@example.com', 's3cr3t'       , 'sk_live_ghi789' , 'ssh-rsa AAAAB3Nz', '-----BEGIN KEY---', 'id'     , null, 3, 'Foo bar'      , 'Baz qux'      , 'closed' , 'three', 7, null, 'Radio 3', 7500, 3500, false, false, true , 1],
+	[4, -12.75  , 60         ,      7, time(2000,1,1) , time(2000,1,1,0,1)  , time(1970,1,2)     , 23*3600+59*60 , 61   , false, 'open'   , []               , '#111111'                , 0   , 'caret_right' , {description: 'Object without a place_id'}               , 'ftp://files.example.com', '555-0103', 'd@example.com', 'pw'           , 'sk_live_jkl012' , 'ssh-dss AAAAB3Nz', '-----BEGIN KEY---', 'status' , null, 1, 'Short'        , 'Right'        , 'open'   , 'one'  , null, 7, 'Radio 1', 1000, 4000, true , true , false, 3],
+	[5, null    , null       ,   null, null           , null                , null               , null          , null , null , null     , null             , null                     , null, null          , null                                                       , null                 , null         , null           , null          , null             , null              , null              , null     , null, null, null           , null           , null     , null   , null, null, null     , null, null, null , null , null , 4],
 ]
 ui.rowsets.grid_types = {
 	fields: fields,
@@ -402,32 +387,27 @@ ui.rowsets.grid_types = {
 	parent_col: 'parent_id',
 }
 
-grid_types_cols = 'status date color grower_id id num size count datetime time timeofday dur active tags progress icon place url phone email password secret pubkey privkey col action parent_id'
-
-demos.grid_types = `
-ui.m(ui.em(2))
-ui.v(0)
-	ui.grid('grid_types', {rowset_name: 'grid_types', cols: grid_types_cols})
-	ui.h(1)
-	ui.end_h()
-ui.end_v()
-`
 }
 
 {
+let grid_types_cols = 'status date color grower_id id num size count datetime time timeofday dur active tags progress icon place url phone email password secret pubkey privkey col action text text_r status_r enum_toggle enum_list enum_list2 radio num_slider slider active2 toggle toggle2 parent_id'
 let grid_demo_source = ui.rowsets.grid_types
 let grid_demo_source_fields = grid_demo_source.fields
 let grid_demo_source_rows = grid_demo_source.rows
 let grid_demo_source_field_i = {}
 for (let i = 0; i < grid_demo_source_fields.length; i++)
 	grid_demo_source_field_i[grid_demo_source_fields[i].name] = i
-grid_demo_base_cols = grid_types_cols.split(/\s+/).filter(
+let grid_demo_base_cols = grid_types_cols.split(/\s+/).filter(
 	col => col != 'parent_id')
-grid_demo_first_cols = grid_demo_base_cols
-first_col_i = 0
-grid_demo_base_field_count = grid_demo_source_fields.length
+let grid_demo_first_cols = grid_demo_base_cols
+let grid_demo_first_col_field = ui.create_field({
+	type: 'enum',
+	enum_values: grid_demo_first_cols,
+	not_null: true,
+})
+let grid_demo_base_field_count = grid_demo_source_fields.length
 
-make_grid_demo_parent_ids = function(row_count, tree_depth) {
+function make_grid_demo_parent_ids(row_count, tree_depth) {
 	let parent_ids = Array(row_count).fill(null)
 	if (!row_count || !tree_depth)
 		return parent_ids
@@ -523,323 +503,569 @@ function make_grid_demo_rowset(
 	}
 }
 
-demos.grid_config = `
+let grid_config_input_opt = {
+	email      : {},
+	text       : {},
+	text_r     : {text_align: 'sr'},
+	password   : {errors: 'tooltip', error_mode: 'all_errors'},
+	grower_id  : {},
+	status     : {},
+	status_r   : {text_align: 'r'},
+	enum_toggle: {control: 'enum_toggle'},
+	enum_list  : {},
+	enum_list2 : {control: 'enum_input'},
+	radio      : {control: 'radio_list'},
+	date       : {},
+	datetime   : {},
+	color      : {},
+	num_slider : {control: 'num_slider', errors: 'label', error_mode: 'all'},
+	slider     : {control: 'slider'},
+	active     : {},
+	active2    : {},
+	toggle     : {control: 'toggle'},
+	toggle2    : {control: 'toggle'},
+}
+for (let col in grid_config_input_opt)
+	grid_config_input_opt[col].col = col
+let grid_config_label_pos_field = ui.create_field({
+	type: 'enum',
+	enum_values: ['left', 'left-right-align', 'top', 'hide'],
+	null_text: 'None',
+})
+let grid_config_split_field = ui.create_field({
+	type: 'enum',
+	enum_values: ['v', 'h'],
+	enum_labels: {v: 'Split V', h: 'Split H'},
+	not_null: true,
+})
+let grid_config_rows_field = ui.create_field({
+	type: 'enum',
+	enum_values: [1000, 10000, 100000, 1000000],
+	enum_labels: {1000: '1000', 10000: '10k', 100000: '100k', 1000000: '1M'},
+	not_null: true,
+})
+let grid_config_cols_field = ui.create_field({
+	type: 'enum',
+	enum_values: [grid_demo_base_field_count, 100, 1000],
+	enum_labels: {100: '100', 1000: '1K'},
+	not_null: true,
+})
+
+ui.saved_value('grid_config_tree', true)
+ui.saved_value('grid_config_auto_expand', false)
+ui.saved_value('grid_config_can_focus_cells', true)
+ui.saved_value('grid_config_can_select_multiple', true)
+ui.saved_value('grid_config_can_select_non_siblings', true)
+ui.saved_value('grid_config_can_change_parent', true)
+ui.saved_value('grid_config_auto_focus_first_cell', true)
+ui.saved_value('grid_config_enter_edit_on_click', false)
+ui.saved_value('grid_config_enter_edit_on_click_focused', false)
+ui.saved_value('grid_config_auto_jump_cells', true)
+ui.saved_value('grid_config_stay_in_edit_mode', true)
+ui.saved_value('grid_config_auto_advance_row', false)
+ui.saved_value('grid_config_exit_edit_on_escape', true)
+ui.saved_value('grid_config_validate_on_load', true)
+ui.saved_value('grid_config_readonly', false)
+ui.saved_value('grid_config_label_pos', 'left', grid_config_label_pos_field)
+ui.saved_value('grid_config_split_hv', 'v', grid_config_split_field)
+ui.saved_value('grid_config_rows', 1000, grid_config_rows_field)
+ui.saved_value('grid_config_cols', grid_demo_base_field_count,
+	grid_config_cols_field)
+ui.saved_value('grid_config_tree_depth_slider', 4)
+ui.saved_value('grid_config_first_col', grid_demo_first_cols[0],
+	grid_demo_first_col_field)
+ui.saved_value('grid_config_fast_path', ui.GRID_FAST_PATH)
+
+let grid_config_detail_rows = []
+for (let master_id = 1; master_id <= 20; master_id++)
+	for (let k = 1; k <= 3; k++)
+		grid_config_detail_rows.push([
+			grid_config_detail_rows.length + 1,
+			master_id,
+			'Item '+master_id+'.'+k,
+			master_id * k % 10,
+		])
+ui.rowsets.grid_config_detail = {
+	pk: 'id',
+	fields: [
+		{name: 'id'       , w:  50, type: 'number', editable: false},
+		{name: 'master_id', w:  70, type: 'number', label: 'Master'},
+		{name: 'name'     , w: 120},
+		{name: 'qty'      , w:  60, type: 'number'},
+	],
+	rows: grid_config_detail_rows,
+}
+
+function set_grid_config_null(nav) {
+	let row = nav.focused_row
+	if (!row)
+		return
+	for (let col in grid_config_input_opt) {
+		let field = nav.optfld(col)
+		if (nav.can_change_val(row, field))
+			nav.set_cell_val(row, field, null, {input: nav})
+	}
+}
+
+demos.grid = function() {
 let state = ui.state('grid_config_state')
-state.tree ??= true
-state.groups ??= false
-state.auto_expand ??= false
-state.can_focus_cells ??= true
-state.can_select_multiple ??= true
-state.can_select_non_siblings ??= true
-state.can_change_parent ??= true
-state.auto_focus_first_cell ??= true
-state.enter_edit_on_click ??= false
-state.enter_edit_on_click_focused ??= false
-state.auto_jump_cells ??= true
-state.stay_in_edit_mode ??= true
-state.auto_advance_row ??= false
-state.exit_edit_on_escape ??= true
 
-let rows_slider_id = 'grid_config_rows_slider'
-state.row_count ??= 100
-
-let col_max = state.row_count
-	? max(grid_demo_base_field_count, min(
-		grid_demo_base_field_count + 1000,
-		floor(1000000 / state.row_count)))
-	: grid_demo_base_field_count + 1000
-let col_slider_id = 'grid_config_duplicates_slider'
-state.col_count ??= grid_demo_base_field_count
-state.col_count = min(state.col_count, col_max)
+let row_count = ui.value('grid_config_rows')
+let col_max = max(grid_demo_base_field_count,
+	floor(1000000 / row_count))
+let col_count = ui.value('grid_config_cols')
+if (col_count > col_max) {
+	col_count = col_max
+	ui.set_saved_value('grid_config_cols', col_count)
+}
 
 let tree_depth_slider_id = 'grid_config_tree_depth_slider'
-state.tree_depth ??= 4
+state.tree_depth_slider_field ??= ui.create_field({
+	type: 'number',
+	min: 0,
+	max: 8,
+	decimals: 0,
+	slider_markers: false,
+})
+let tree_depth_slider_field = state.tree_depth_slider_field
+let tree_depth = round(ui.value(tree_depth_slider_id))
 
-let first_col = grid_demo_first_cols[first_col_i]
+let first_col = ui.value('grid_config_first_col')
+let readonly = ui.value('grid_config_readonly')
+let auto_expand = ui.value('grid_config_auto_expand')
 
-state.first_col = first_col
-
-if (!state.rowset_name || state.recreate) {
-	if (state.rowset_name)
-		delete ui.rowsets[state.rowset_name]
-	state.generation = (state.generation ?? 0) + 1
-	state.rowset_name = 'grid_config_rowset_'+state.generation
-	ui.rowsets[state.rowset_name] = make_grid_demo_rowset(
-		state.row_count,
-		state.tree_depth,
-		state.first_col,
-		state.col_count)
-	state.grid_id = 'grid_config_grid_'+state.generation
+if (!ui.rowsets.grid_config_rowset || state.recreate) {
+	ui.rowsets.grid_config_rowset = make_grid_demo_rowset(
+		row_count,
+		tree_depth,
+		first_col,
+		col_count)
+	ui.free_state('grid_config_grid')
 	state.recreate = false
 }
 
-let group_col = first_col == 'status' ? 'color' : 'status'
 let grid_opt = {
-	rowset_name: state.rowset_name,
-	flat: !state.tree,
-	tree_col: state.first_col,
-	group_by: state.groups ? group_col : null,
-	can_focus_cells: state.can_focus_cells,
-	can_select_multiple: state.can_select_multiple,
-	can_select_non_siblings: state.can_select_non_siblings,
-	can_change_parent: state.can_change_parent,
-	auto_focus_first_cell: state.auto_focus_first_cell,
-	enter_edit_on_click: state.enter_edit_on_click,
-	enter_edit_on_click_focused: state.enter_edit_on_click_focused,
-	auto_jump_cells: state.auto_jump_cells,
-	stay_in_edit_mode: state.stay_in_edit_mode,
-	auto_advance_row: state.auto_advance_row,
-	exit_edit_on_escape: state.exit_edit_on_escape,
+	rowset_name: 'grid_config_rowset',
+	flat: !ui.value('grid_config_tree'),
+	tree_col: first_col,
+	can_focus_cells: ui.value('grid_config_can_focus_cells'),
+	can_select_multiple: ui.value('grid_config_can_select_multiple'),
+	can_select_non_siblings: ui.value('grid_config_can_select_non_siblings'),
+	can_change_parent: ui.value('grid_config_can_change_parent'),
+	auto_focus_first_cell: ui.value('grid_config_auto_focus_first_cell'),
+	enter_edit_on_click: ui.value('grid_config_enter_edit_on_click'),
+	enter_edit_on_click_focused:
+		ui.value('grid_config_enter_edit_on_click_focused'),
+	auto_jump_cells: ui.value('grid_config_auto_jump_cells'),
+	stay_in_edit_mode: ui.value('grid_config_stay_in_edit_mode'),
+	auto_advance_row: ui.value('grid_config_auto_advance_row'),
+	exit_edit_on_escape: ui.value('grid_config_exit_edit_on_escape'),
+	validate_on_load: ui.value('grid_config_validate_on_load'),
+	can_change_rows: !readonly,
 }
-let grid_nav = ui.state_of(state.grid_id, 'nav')
+let grid_nav = ui.state_of('grid_config_grid', 'e')
 if (grid_nav)
-	grid_nav.auto_expand = state.auto_expand
+	grid_nav.auto_expand = auto_expand
 
 ui.hsplit('grid_config_split', 300, 'px', 2)
-ui.grid(state.grid_id, grid_opt)
-grid_nav = ui.state_of(state.grid_id, 'nav')
+
+ui.v()
+ui.p(ui.sp())
+ui.h(0, ui.sp2(), 'l')
+	ui.toggle_button('grid_config_readonly', null, 'Readonly', null, 0)
+	if (ui.button('grid_config_reset', 'Reset') && grid_nav)
+		grid_nav.revert_changes()
+	if (ui.button('grid_config_set_null', 'Set null') && grid_nav)
+		set_grid_config_null(grid_nav)
+	let split_hv = ui.enum_toggle('grid_config_split_hv',
+		null, grid_config_split_field)
+	let split_vh = split_hv == 'h' ? 'v' : 'h'
+ui.end_h()
 if (grid_nav)
-	grid_nav.auto_expand = state.auto_expand
+	grid_nav.can_change_rows = !readonly
+
+ui.hvsplit(split_hv, 'grid_config_form_split_'+split_hv)
+	ui.hvsplit(split_vh, 'grid_config_detail_split_'+split_vh)
+		ui.grid('grid_config_grid', grid_opt)
+		grid_nav = ui.state_of('grid_config_grid', 'e')
+		if (grid_nav)
+			grid_nav.auto_expand = auto_expand
+	ui.splitter()
+		let master_row_id = grid_nav?.focused_row_cell_val('id')
+		ui.grid('grid_config_detail', {
+			rowset_name: 'grid_config_detail',
+			param_vals: grid_nav?.focused_row
+				? [{master_id: master_row_id}] : false,
+		})
+	ui.end_hvsplit()
+ui.splitter()
+	ui.v()
+	ui.p(ui.sp())
+	ui.h(0, ui.sp2(), 'l')
+		ui.label('grid_config_label_pos', 'Labels', 0)
+		let label_pos = ui.enum_toggle('grid_config_label_pos',
+			null, grid_config_label_pos_field)
+	ui.end_h()
+	ui.scrollbox('grid_config_form_sb', 1, 'auto', 'auto', 's', 's')
+		ui.m(ui.sp4())
+		ui.v_aligned(1, ui.sp2(), 'l', 't', ui.em(16))
+			if (grid_nav)
+				for (let col in grid_config_input_opt) {
+					let opt = grid_config_input_opt[col]
+					opt.nav = grid_nav
+					opt.label_pos = label_pos
+					ui.box_args(1, 'l', 'c')
+					ui.nav_input('grid_config_'+col, opt)
+				}
+		ui.end_v_aligned()
+	ui.end_scrollbox()
+	ui.end_v()
+ui.end_hvsplit()
+ui.end_v()
 
 ui.splitter()
 ui.scrollbox('grid_config_controls_sb', 1, 'auto', 'auto', 's', 's')
 	ui.m(ui.sp4())
 	ui.v(0, ui.sp(), 's', 't')
 
-		ui.v_tabstops(0)
+		ui.v_aligned(0)
 		ui.h(1, ui.sp1())
 			ui.text('', 'Rows', 0)
-			state.row_count = round(ui.slider(
-				rows_slider_id, state.row_count, 1, 1000000, 0, false))
-			ui.text('', state.row_count, 2, 'r')
+			ui.enum_toggle('grid_config_rows', null, grid_config_rows_field)
 		ui.end_h()
 
 		ui.h(1, ui.sp1())
 			ui.text('', 'Cols', 0)
-			state.col_count = round(ui.slider(
-				col_slider_id, state.col_count, grid_demo_base_field_count, col_max, 0, false))
-			ui.text('', state.col_count+' / '+col_max, 2, 'r')
+			ui.enum_toggle('grid_config_cols', null, grid_config_cols_field)
 		ui.end_h()
 
 		ui.h(1, ui.sp1())
 			ui.text('', 'Tree depth', 0, 'l')
-			state.tree_depth = round(ui.slider(
-				tree_depth_slider_id, state.tree_depth, 0, 8, 0, false))
-			ui.text('', state.tree_depth, 2, 'r')
+			ui.slider(tree_depth_slider_id, null, tree_depth_slider_field)
+			ui.text('', tree_depth, 2, 'r')
 		ui.end_h()
 
-		ui.end_v_tabstops()
-		ui.text('', 'Cells: '+state.row_count * state.col_count, 0, 'l')
+		ui.end_v_aligned()
+		ui.text('', 'Cells: '+row_count * col_count, 0, 'l')
 
 		ui.h(1, ui.sp1())
 			ui.text('', 'Col #1', 0, 'l')
-			first_col_i = ui.list_dropdown('grid_config_first_col',
-				grid_demo_first_cols, first_col_i)
-			if (first_col_i != null) {
-				state.first_col = grid_demo_first_cols[first_col_i]
-				first_col = state.first_col
-			}
+			ui.list_dropdown('grid_config_first_col',
+				grid_demo_first_cols, null, grid_demo_first_col_field)
 		ui.end_h()
 
-		function grid_config_toggle(id, label, key) {
+		function grid_config_toggle(id, label) {
 			ui.h(1, ui.sp(), 's', 'c')
 				ui.label(id, label, 1, 'l', 'c')
-				state[key] = ui.toggle(id, state[key], 0)
+				ui.toggle(id, null, null, 0)
 			ui.end_h()
 		}
 
-		grid_config_toggle('grid_config_tree', 'Tree', 'tree')
-		grid_config_toggle('grid_config_groups', 'Groups', 'groups')
-		grid_config_toggle('grid_config_auto_expand',
-			'Expand cells', 'auto_expand')
-		grid_config_toggle('grid_config_can_focus_cells',
-			'Focus cells', 'can_focus_cells')
+		grid_config_toggle('grid_config_tree', 'Tree')
+		grid_config_toggle('grid_config_auto_expand', 'Expand cells')
+		grid_config_toggle('grid_config_can_focus_cells', 'Focus cells')
 		grid_config_toggle('grid_config_can_select_multiple',
-			'Multiple selection', 'can_select_multiple')
+			'Multiple selection')
 		grid_config_toggle('grid_config_can_select_non_siblings',
-			'Select across parents', 'can_select_non_siblings')
+			'Select across parents')
 		grid_config_toggle('grid_config_can_change_parent',
-			'Change tree parents', 'can_change_parent')
+			'Change tree parents')
 		grid_config_toggle('grid_config_auto_focus_first_cell',
-			'Focus first cell', 'auto_focus_first_cell')
+			'Focus first cell')
 		grid_config_toggle('grid_config_enter_edit_on_click',
-			'Edit on click', 'enter_edit_on_click')
+			'Edit on click')
 		grid_config_toggle('grid_config_enter_edit_on_click_focused',
-			'Edit focused cell on click', 'enter_edit_on_click_focused')
+			'Edit focused cell on click')
 		grid_config_toggle('grid_config_auto_jump_cells',
-			'Jump across cells', 'auto_jump_cells')
+			'Jump across cells')
 		grid_config_toggle('grid_config_stay_in_edit_mode',
-			'Stay in edit mode', 'stay_in_edit_mode')
+			'Stay in edit mode')
 		grid_config_toggle('grid_config_auto_advance_row',
-			'Advance to next row', 'auto_advance_row')
+			'Advance to next row')
 		grid_config_toggle('grid_config_exit_edit_on_escape',
-			'Escape exits editing', 'exit_edit_on_escape')
+			'Escape exits editing')
+		grid_config_toggle('grid_config_validate_on_load',
+			'Validate on load')
+		grid_config_toggle('grid_config_fast_path', 'Grid fast path')
 
 		if (ui.primary_button('grid_config_recreate', 'Recreate grid'))
 			state.recreate = true
 	ui.end_v()
 ui.end_scrollbox()
 ui.end_hsplit()
-`
+}
 }
 
-tuts.text = `
-// text() shows a line of text.
-
-// how to call it: text(id, text, fr=1,
-//      align='center', valign='center',
-//      max_min_w=inf, min_w='auto', min_h='auto'
-//   )
-
-// max_min_w limits how much text can expand under min_w='auto' before being clipped.
-// the id is optional, we'll get back to that.
-
-ui.text('', 'Hello World!')
-`
-
-tuts.h = `
-// h() is a flexbox-like container that places its children horizontally.
-
-// how to call it: ui.h(fr=1, gap=0, align='stretch', valign='stretch', min_w=0, min_h=0)
-
-ui.h()
-	ui.text('', 'Hello', 1, 'c')
-	ui.text('', 'World', 1, 'c')
-ui.end()
-`
-
-tuts.v = `
-// v() is a flexbox-like container that places its children vertically.
-
-// how to call it: ui.v(fr=1, gap=0, align='stretch', valign='stretch', min_w=0, min_h=0)
-
+{
+let input1_text
+let input2_text
+let password1_text
+let dd_items = [
+	'item 1',
+	'item 2 that is a lot longer than the others',
+	'item 3',
+	'item 4 that is so damn long even the popup will clip it before '
+	+'it looks ridiculous',
+]
+let dd1_value
+let dd2_value
+let enum_toggle_value
+let radio_items = ['Radio 1', 'Radio 2', 'Radio 3']
+let radio_value
+let toggle1_on
+let toggle2_on
+let cb1_checked
+let cb2_checked
+let slider1_v
+let num_slider1_value
+let date_input1_v
+let date_input3_v
+let lookup1_value
+let input1_field = ui.create_field({label: 'Input'})
+let input2_field = ui.create_field({label: 'Input R'})
+let password1_field = ui.create_field({
+	type: 'password',
+	min_len: 8,
+	conditions: 'lower upper digit symbol',
+})
+let lookup1_field = ui.create_field({
+	type: 'number',
+	label: 'Lookup',
+	lookup_rowset_name: 'grower',
+	display_col: 'name',
+})
+let date_input1_field = ui.create_field({type: 'date'})
+let date_input3_field = ui.create_field({
+	type: 'datetime', label: 'Date & time',
+})
+let enum_input_field = ui.create_field({
+	type: 'enum', label: 'Dropdown', enum_values: dd_items,
+})
+let enum_toggle_field = ui.create_field({
+	type: 'enum',
+	label: 'Enum toggle',
+	enum_values: 'one two three',
+})
+let radio_list1_field = ui.create_field({
+	type: 'enum',
+	label: 'Radio',
+	enum_values: radio_items,
+})
+let num_slider1_field = ui.create_field({
+	type: 'number',
+	name: 'Num1',
+	label: 'Number slider',
+	min: 1000,
+	max: 9000,
+	slider_min: 0,
+	slider_max: 10000,
+	scale: 100,
+	decimals: 2,
+})
+let slider1_field = ui.create_field({
+	type: 'number',
+	label: 'Slider',
+	min: 2000,
+	max: 4000,
+	slider_min: 0,
+	slider_max: 10000,
+	scale: 100,
+	decimals: 2,
+	slider_markers: false,
+})
+let color_input1_v
+let color_input1_field = ui.create_field({type: 'color'})
+let cb1_field = ui.create_field({type: 'bool', label: 'Checkbox 1'})
+let cb2_field = ui.create_field({type: 'bool', label: 'Checkbox 2'})
+let toggle1_field = ui.create_field({type: 'bool', label: 'Toggle 1'})
+let toggle2_field = ui.create_field({type: 'bool', label: 'Toggle 2'})
+let input_controls_fields = [
+	input1_field,
+	input2_field,
+	password1_field,
+	lookup1_field,
+	date_input1_field,
+	date_input3_field,
+	enum_input_field,
+	enum_toggle_field,
+	radio_list1_field,
+	color_input1_field,
+	num_slider1_field,
+	slider1_field,
+	cb1_field,
+	cb2_field,
+	toggle1_field,
+	toggle2_field,
+]
+let input_controls_opt = {
+	input1: {field: input1_field},
+	input2: {field: input2_field, text_align: 'sr'},
+	password1: {field: password1_field, errors: 'label', error_mode: 'all'},
+	lookup1: {field: lookup1_field},
+	dd1: {field: enum_input_field},
+	dd2: {field: enum_input_field, text_align: 'r'},
+	enum_toggle1: {field: enum_toggle_field, control: 'enum_toggle'},
+	radio_list1: {field: radio_list1_field, control: 'radio_list'},
+	date_input1: {field: date_input1_field},
+	date_input3: {field: date_input3_field},
+	color_input1: {field: color_input1_field},
+	num_slider1: {
+		field: num_slider1_field,
+		control: 'num_slider',
+		errors: 'label',
+		error_mode: 'all',
+	},
+	slider1: {field: slider1_field, control: 'slider'},
+	cb1: {field: cb1_field},
+	cb2: {field: cb2_field},
+	toggle1: {field: toggle1_field, control: 'toggle'},
+	toggle2: {field: toggle2_field, control: 'toggle'},
+}
+let input_controls_readonly = false
+let input_controls_label_pos = 'left'
+let input_controls_label_field = ui.create_field({
+	type: 'enum',
+	enum_values: ['left', 'left-right-align', 'top', 'hide'],
+	null_text: 'None',
+})
+function set_input_controls_values(value) {
+	input1_text = value
+	input2_text = value
+	password1_text = value
+	lookup1_value = value
+	dd1_value = value
+	dd2_value = value
+	enum_toggle_value = value
+	radio_value = value
+	toggle1_on = value
+	toggle2_on = value
+	cb1_checked = value
+	cb2_checked = value
+	slider1_v = value
+	num_slider1_value = value
+	date_input1_v = value
+	date_input3_v = value
+	color_input1_v = value
+}
+function reset_input_controls_values() {
+	input1_text = 'Hello1 Hello1'
+	input2_text = 'Hello2 Hello2'
+	password1_text = 'secret'
+	lookup1_value = 2
+	dd1_value = dd_items[1]
+	dd2_value = dd_items[0]
+	enum_toggle_value = 'one'
+	radio_value = radio_items[0]
+	toggle1_on = false
+	toggle2_on = true
+	cb1_checked = false
+	cb2_checked = true
+	slider1_v = 3000
+	num_slider1_value = 2500
+	date_input1_v = parse_date('2026-03-14', 'SQL')
+	date_input3_v = parse_date('2026-09-17 13:45:00', 'SQL')
+	color_input1_v = '#1e90ff'
+}
+reset_input_controls_values()
+demos.input_controls = function() {
+ui.m(ui.sp4())
 ui.v()
-	ui.text('', 'Hello')
-	ui.text('', 'World')
-ui.end()
-`
+	ui.v_aligned(0, ui.sp2(), 'c', 'c')
+	ui.h(0, ui.sp2(), 'l')
+		ui.label('input_controls_readonly', 'Readonly', 0)
+		ui.h(0, ui.sp(), 'l')
+			input_controls_readonly = ui.checkbox(
+				'input_controls_readonly', input_controls_readonly, null, 0, 'l')
+			if (ui.button('input_controls_reset', 'Reset'))
+				reset_input_controls_values()
+			if (ui.button('input_controls_set_null', 'Set null'))
+				set_input_controls_values(null)
+		ui.end_h()
+	ui.end_h()
+	ui.h(0, ui.sp2(), 'l')
+		ui.label('input_controls_label_pos', 'Labels', 0)
+		input_controls_label_pos = ui.enum_toggle('input_controls_label_pos',
+			input_controls_label_pos, input_controls_label_field)
+	ui.end_h()
 
-tuts.stack = `
-// stack() is a container that places its children on top of each other,
-// expanding as needed to make them fit.
+	for (let field of input_controls_fields)
+		field.readonly = input_controls_readonly
+	for (let id in input_controls_opt)
+		input_controls_opt[id].label_pos = input_controls_label_pos
+	let is_label_left = input_controls_label_pos == 'left'
+		|| input_controls_label_pos == 'left-right-align'
 
-// how to call it: ui.stack(id, fr=1, align='stretch', valign='stretch', min_w=0, min_h=0)
+	ui.end_v_aligned()
+	ui.v_aligned(0, ui.sp2(), 'c', 'c')
 
-ui.stack()
-	ui.text('', 'Hello')
-	ui.text('', 'World')
-ui.end()
-`
-
-tuts.bb = `
-// bb() puts a background and/or border on its container, which is usually a stack.
-
-// how to call it: bb(id, bg_color, border_sides, border_color, border_radius=0)
-//    border_sides can be true or 1 (all), null (none), or any combination of 'ltrb'.
-//    bg_color and border_color can be null (none).
-
-// ui.shadow() draws a box shadow on the next bb() call.
-
-ui.bg_style    ('*', 'crimson', 'normal', 348, .83, .47)
-ui.border_style('*', 'brown'  , 'normal',   0, .59, .41)
-ui.shadow_style('light', 'demo_bb', 2, 2, 5, 0, false, 0, 0, 0, 1)
-ui.shadow_style('dark',  'demo_bb', 2, 2, 5, 0, false, 0, 0, 0, 1)
-
-ui.stack('', 0, 'c', 'c', 150, 50)
-	ui.shadow('demo_bb')
-	ui.bb('crimson', null, 'ltrb', 'brown', null, 10)
-	ui.text('', 'Hello World!', 0, 'c')
-ui.end()
-`
-
-tuts.font_size = `
-// font(), font_size(), font_weight(), color() can be used
-// to style up the text in the current container.
-
-ui.v(0, 20, 'c', 'c')
-	ui.font_size(2)
-	ui.color(':teal')
-	ui.text('', 'Buongiorno!')
-	ui.h(0, 10, 'c')
-		// font and color changes are scoped.
-		// when this container ends, previus settings take effect.
-		ui.font('Serif')
-		ui.font_size(3.5)
-		ui.font_weight('bold')
-		ui.color(':green')
-		ui.text('', 'Hello')
-		ui.text('', 'World!')
-	ui.end()
-	// using the font size set above in this scope.
-	ui.text('', 'Buona notte!')
-ui.end()
-`
-
-demos.flex_align_gap = `
-ui.v(1, 30, 'c', 'c')
-
-	ui.h(1, 10, 'c', 'c')
-	for (let align of ['l', 'r', 'c', 's']) {
-		ui.v(1, 10)
-		for (let valign of ['t', 'b', 'c', 's']) {
-			ui.h(1, 10, 'c', 'c', 30, 30)
-				ui.border(1, 'intense')
-				for (let i = 1; i <= 3; i++) {
-					ui.stack('', 1, align, valign, 10, 10)
-						ui.bb('info')
-					ui.end_stack()
-				}
-			ui.end()
-		}
-		ui.end()
-	}
-	ui.end()
-
-	ui.h(1, 10, 'c', 'c')
-	for (let align of ['l', 'r', 'c', 's']) {
-		ui.v(1, 10)
-		for (let valign of ['t', 'b', 'c', 's']) {
-			ui.v(1, 10, 'c', 'c', 30, 30)
-				ui.border(1, 'intense')
-				for (let i = 1; i <= 3; i++) {
-					ui.stack('', 1, align, valign, 10, 10)
-						ui.bb('info')
-					ui.end_stack()
-				}
-			ui.end()
-		}
-		ui.end()
-	}
-	ui.end()
-
-ui.end()
-`
-
-demos.flex_fr_min_w = `
-ui.h(1, 30)
-for (let hv of ['h', 'v']) {
-	ui.hv(hv, 1, 10, 'c', 'c', 100, 100)
-		ui.stack('', 1)
-			ui.bb('info')
-		ui.end_stack()
-		ui.stack('', 2)
-			ui.bb('info')
-		ui.end_stack()
-		ui.stack('', 3)
-			ui.bb('info')
-		ui.end_stack()
-		ui.stack('', 4)
-			ui.bb('info')
-		ui.end_stack()
-		ui.stack('', 0, 's', 's', 100, 100)
-			ui.bb('info')
-		ui.end_stack()
-	ui.end()
+	ui.box_args(0, 'l')
+	input1_text = ui.field_input('input1', input1_text,
+		input_controls_opt.input1)
+	ui.box_args(0, 'l')
+	input2_text = ui.field_input('input2', input2_text,
+		input_controls_opt.input2)
+	ui.box_args(0, 'l')
+	password1_text = ui.field_input('password1', password1_text,
+		input_controls_opt.password1)
+	ui.box_args(0, 'l')
+	lookup1_value = ui.field_input('lookup1', lookup1_value,
+		input_controls_opt.lookup1)
+	ui.box_args(0, 'l')
+	dd1_value = ui.field_input('dd1', dd1_value, input_controls_opt.dd1)
+	ui.box_args(0, 'l')
+	dd2_value = ui.field_input('dd2', dd2_value, input_controls_opt.dd2)
+	ui.box_args(0, 'l')
+	enum_toggle_value = ui.field_input('enum_toggle1', enum_toggle_value,
+		input_controls_opt.enum_toggle1)
+	ui.box_args(0, 'l')
+	date_input1_v = ui.field_input('date_input1', date_input1_v,
+		input_controls_opt.date_input1)
+	ui.box_args(0, 'l')
+	date_input3_v = ui.field_input('date_input3', date_input3_v,
+		input_controls_opt.date_input3)
+	ui.box_args(0, 'l')
+	color_input1_v = ui.field_input('color_input1', color_input1_v,
+		input_controls_opt.color_input1)
+	ui.box_args(0, 'l')
+	num_slider1_value = ui.field_input('num_slider1', num_slider1_value,
+		input_controls_opt.num_slider1)
+	ui.box_args(0, 'l')
+	slider1_v = ui.field_input('slider1', slider1_v,
+		input_controls_opt.slider1)
+	ui.box_args(0, 'l')
+	cb1_checked = ui.field_input('cb1', cb1_checked, input_controls_opt.cb1)
+	ui.box_args(0, 'l')
+	cb2_checked = ui.field_input('cb2', cb2_checked, input_controls_opt.cb2)
+	ui.box_args(0, 'l')
+	toggle1_on = ui.field_input('toggle1', toggle1_on,
+		input_controls_opt.toggle1)
+	ui.box_args(0, 'l')
+	toggle2_on = ui.field_input('toggle2', toggle2_on,
+		input_controls_opt.toggle2)
+	ui.box_args(0, 'l')
+	radio_value = ui.field_input('radio_list1', radio_value,
+		input_controls_opt.radio_list1)
+	ui.h(0, ui.sp2())
+		if (is_label_left)
+			ui.box()
+		ui.h()
+			ui.button('btn1', 'Button',
+				0, 'l', 'c', 0, 0, null, input_controls_readonly)
+			ui.h(0, ui.sp())
+				ui.primary_button('btn2', 'Primary',
+					0, 'l', 'c', 0, 0, input_controls_readonly)
+				ui.icon_button('btn_plus', 'plus', 'Icon',
+					0, 'l', 'c', 0, 0, null, input_controls_readonly)
+			ui.end_h()
+		ui.end_h()
+	ui.end_h()
+	ui.end_v_aligned()
+ui.end_v()
 }
-ui.end_h()
-`
+}
 
-demos.split = `
+{
+demos.split = function() {
 ui.hsplit('hsplit1', .5)
 		ui.vsplit('vsplit1')
 				ui.hsplit('hsplit2', 100, 'px')
@@ -855,7 +1081,7 @@ ui.hsplit('hsplit1', .5)
 				ui.end_hsplit()
 		ui.end_vsplit()
 	ui.splitter()
-		ui.vsplit('vsplit2')
+		ui.vsplit('vsplit2', .4)
 				ui.hsplit('hsplit4', 200, 'px', 2)
 						ui.text('', 'Mobile')
 					ui.splitter()
@@ -869,16 +1095,18 @@ ui.hsplit('hsplit1', .5)
 				ui.end_hsplit()
 		ui.end_vsplit()
 ui.end_hsplit()
-`
+}
+}
 
-demos.word_wrap = `
+{
+demos.word_wrap = function() {
 ui.hsplit('hsplit1', .8)
 		ui.v()
 
 			ui.p(20)
 			ui.stack()
 				ui.bb('bg2')
-				ui.text_wrapped('text1', \`
+				ui.text_wrapped('text1', `
 					Were we in a Garden of Eden where land and other goods were infinitely
 					abundant, there would be no scarcity and, therefore, no need
 					for property rules; property concepts would be meaningless. The idea
@@ -888,24 +1116,24 @@ ui.hsplit('hsplit1', .8)
 					in these circumstances would not be theft. Property rights are not
 					applicable to things of infinite abundance, because there cannot be
 					conflict over such things.
-				\`, 0, 'c')
+				`, 0, 'c')
 			ui.end_stack()
 
 			ui.p(20)
 			ui.stack()
 				ui.bb('bg1')
-				ui.text_wrapped('text2', \`
+				ui.text_wrapped('text2', `
 					The wrapped text pushes this flex cell down.
-				\`, 0, 'l')
+				`, 0, 'l')
 			ui.end_stack()
 
 			ui.p(20)
 			ui.stack()
 				ui.bb('bg2')
-				ui.text_wrapped('text3', \`
+				ui.text_wrapped('text3', `
 					The wrapped text pushes this flex cell down.
 					Also, this is right-aligned.
-				\`, 0, 'r')
+				`, 0, 'r')
 			ui.end_stack()
 
 		ui.end_v()
@@ -914,12 +1142,14 @@ ui.hsplit('hsplit1', .8)
 			ui.text('', '<- Drag to wrap')
 		ui.end_stack()
 ui.end_hsplit()
-`
+}
+}
 
-input1_text = 'Hello1 Hello1 Hello1 Hello1'
-input2_text = 'Hello2 Hello2'
-input3_text = 'Hello3 Hello3 Hello3 Hello3'
-demos.input = `
+{
+let input1_text = 'Hello1 Hello1'
+let input2_text = 'Hello2 Hello2'
+let input3_text = 'Hello3 Hello3 Hello3 Hello3'
+demos.input = function() {
 ui.v(1, ui.sp(), 'l', 'c')
 	ui.h(1, ui.sp())
 		ui.label('input1', 'First Input')
@@ -934,77 +1164,36 @@ ui.v(1, ui.sp(), 'l', 'c')
 		input3_text = ui.input('input3', input3_text)
 	ui.end_h()
 ui.end_v()
-`
+}
+}
 
-num_slider1_value = 25
-demos.num_slider = `
+{
+let num_slider1_value = 25
+let num_slider1_field = ui.create_field({
+	type: 'number',
+	min: 10,
+	max: 90,
+	slider_min: 0,
+	slider_max: 100,
+	decimals: 2,
+})
+demos.num_slider = function() {
 ui.v(0, ui.sp(), 'c', 'c', 300)
 	ui.box_args(0)
 	num_slider1_value = ui.num_slider(
-		'num_slider1', num_slider1_value, 0, 100, 2)
+		'num_slider1', num_slider1_value, num_slider1_field)
 ui.end_v()
-`
+}
+}
 
-demos.input_controls = `
-ui.v_tabstops(0, ui.sp2(), 'c', 'c')
-	ui.h(0, ui.sp2())
-		ui.label('input1', 'Input', 0)
-		input1_text = ui.input('input1', input1_text)
-	ui.end_h()
-	ui.h(0, ui.sp2())
-		ui.label('dd1', 'Dropdown', 0)
-		dd1_i = ui.list_dropdown('dd1', dd_items, dd1_i)
-	ui.end_h()
-	ui.h(0, ui.sp2())
-		ui.label('num_slider1', 'Number slider', 0)
-		num_slider1_value = ui.num_slider(
-			'num_slider1', num_slider1_value, 0, 100, 2)
-	ui.end_h()
-	ui.h(0, ui.sp2())
-		ui.label('slider1', 'Slider', 0)
-		slider1_v = ui.slider('slider1', slider1_v, 20, 40, 1, false)
-	ui.end_h()
-
-	ui.h(0, ui.sp4())
-		ui.box()
-		ui.h(0, ui.sp2())
-			cb1_checked = ui.checkbox('cb1', cb1_checked)
-			ui.label('cb1', 'Checkbox', 1)
-		ui.end_h()
-	ui.end_h()
-	ui.h(0, ui.sp4())
-		ui.box()
-		ui.h(0, ui.sp2())
-			toggle1_on = ui.toggle('toggle1', toggle1_on)
-			ui.label('toggle1', 'Toggle', 1)
-		ui.end_h()
-	ui.end_h()
-	ui.h(0, ui.sp4())
-		ui.text('', 'Radio', 0, 'l', 't')
-		ui.v(0, ui.sp2())
-			for (let i = 0; i < 3; i++) {
-				ui.h(0, ui.sp2())
-					radio_sel_i = ui.radio(
-						'radio'+i, 'radio_group1', i, radio_sel_i)
-					ui.label('radio'+i, 'Radio '+(i+1))
-				ui.end_h()
-			}
-		ui.end_v()
-	ui.end_h()
-	ui.h(0, ui.sp2(), 'c')
-		ui.button('btn1', 'Button', 0)
-		ui.primary_button('btn2', 'Primary', 0)
-		ui.icon_button('btn_plus', 'plus', null, 0)
-	ui.end_h()
-
-ui.end_v_tabstops()
-`
-
-demos.bg_dots = `
+{
+demos.bg_dots = function() {
 ui.bg_dots('dots1', 0.3)
-`
+}
+}
 
-demos.button = `
+{
+demos.button = function() {
 ui.m(ui.sp2())
 ui.h(1, ui.sp2(), 's', 't')
 	if (ui.primary_button('btn1', 'Click me!', 0))
@@ -1012,9 +1201,11 @@ ui.h(1, ui.sp2(), 's', 't')
 	if (ui.button('btn2', 'Click me too!'))
 		pr('clicked btn2!')
 ui.end_h()
-`
+}
+}
 
-demos.popup = `
+{
+demos.popup = function() {
 ui.m(10)
 ui.v(1, 30, 'c', 'c')
 	let i = 1
@@ -1056,9 +1247,11 @@ ui.v(1, 30, 'c', 'c')
 		ui.end_h()
 	}
 ui.end_v()
-`
+}
+}
 
-demos.bb_tooltip = `
+{
+demos.bb_tooltip = function() {
 ui.sb('bb_tooltip_sb', 1)
 ui.stack('', 1, 'l', 't', 800, 800)
 	ui.bb('bg0')
@@ -1085,9 +1278,11 @@ ui.stack('', 1, 'l', 't', 800, 800)
 	}
 ui.end_stack()
 ui.end_sb()
-`
+}
+}
 
-demos.scrollbox = `
+{
+demos.scrollbox = function() {
 
 ui.v(0, 30, 'c', 'c')
 
@@ -1142,16 +1337,30 @@ ui.v(0, 30, 'c', 'c')
 	ui.end_h()
 
 ui.end_v()
-`
+}
+}
 
-demos.toolbox = `
+{
+let tb_dd_values = {}
+let tb_input_text = {}
+let dd_items = [
+	'item 1',
+	'item 2 that is a lot longer than the others',
+	'item 3',
+	'item 4 that is so damn long even the popup will clip it before '
+	+'it looks ridiculous',
+]
+let dropdown_field = ui.create_field({type: 'enum', enum_values: dd_items})
+demos.toolbox = function() {
 function tb_contents(tb) { // tb: toolbox id, prefixes the ids in here
 	ui.stack('', 1, 's', 's', 200, 300)
 		ui.m(ui.sp2())
 		ui.v(1, ui.sp(), 'c', 't')
 			tb_input_text[tb] = ui.input(tb+'_input', tb_input_text[tb] ?? 'type here')
-			tb_dd_i[tb+'1'] = ui.list_dropdown(tb+'_dd1', dd_items, tb_dd_i[tb+'1'])
-			tb_dd_i[tb+'2'] = ui.list_dropdown(tb+'_dd2', dd_items, tb_dd_i[tb+'2'])
+			tb_dd_values[tb+'1'] = ui.list_dropdown(
+				tb+'_dd1', dd_items, tb_dd_values[tb+'1'], dropdown_field)
+			tb_dd_values[tb+'2'] = ui.list_dropdown(
+				tb+'_dd2', dd_items, tb_dd_values[tb+'2'], dropdown_field)
 			ui.stack(tb+'_tt', 0, 'c', 'c', 100, 30)
 				ui.bb('bg2', null, 1, 'intense')
 				ui.text('', 'hover me', 1, 'c')
@@ -1192,8 +1401,10 @@ ui.toolbox('tb3', "(3) I am right-aligned", ']', 't', 100, 100)
 	tb_contents('tb3')
 ui.end_toolbox()
 ui.end_toolboxes()
-`
+}
+}
 
+{
 let test_template = {
 	t: 'v', fr: 2, gap: 20, e: [
 		{t: 'text', id: 't1', s: 'TP Hello!'},
@@ -1201,27 +1412,21 @@ let test_template = {
 			{t: 'bb', bg_color: 'bg3'},
 		]},
 	]}
-demos.template = `
+demos.template = function() {
 ui.template('tpl1', test_template)
-`
-
-demos.color_picker = `
-ui.p(ui.sp())
-ui.stack('', 0, 'c', 'c', 400)
-	ui.border(1, 'light')
-	ui.color_picker('cp1', 200, .75, .25)
-ui.end_stack()
-`
+}
+}
 
 // 240x160 so the fitted box is visibly wider than tall.
-img_data_src = 'data:image/svg+xml,'+encodeURIComponent(
+{
+let img_data_src = 'data:image/svg+xml,'+encodeURIComponent(
 `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">
 	<rect width="240" height="160" fill="#2d7ff9"/>
 	<circle cx="120" cy="80" r="60" fill="#ffd166"/>
 	<path d="M0 0 L240 160 M240 0 L0 160" stroke="#f4f1de" stroke-width="4"/>
 </svg>`)
 
-demos.img = `
+demos.img = function() {
 ui.m(ui.sp2())
 ui.h(1, ui.sp2(), 's', 's')
 
@@ -1246,7 +1451,8 @@ ui.h(1, ui.sp2(), 's', 's')
 	ui.end_v()
 
 ui.end_h()
-`
+}
+}
 
 // screen sharing ------------------------------------------------------------
 
@@ -1279,6 +1485,7 @@ window.demo_remote_viewer_init = function(signal_server) {
 	ui.animate()
 }
 
+{
 function demo_share_screen_init() {
 	signal_server = signal_server || rtc.demo_signal_server()
 	if (!offer_con) {
@@ -1290,8 +1497,9 @@ function demo_share_screen_init() {
 	}
 }
 
-to_sid = ''
-demos.share_screen = `
+let sid_field = ui.create_field({readonly: true})
+let to_sid = ''
+demos.share_screen = function() {
 ui.mt(ui.sp())
 ui.v(1, ui.sp())
 	ui.ml(ui.sp())
@@ -1299,7 +1507,7 @@ ui.v(1, ui.sp())
 	ui.h(0, ui.sp())
 		ui.text('', 'My ID', 0)
 		let my_sid = offer_con.signal_con.sid
-		ui.input('sid', my_sid, null, null, null, true)
+		ui.input('sid', my_sid, sid_field)
 		ui.text('', 'Other ID', 0)
 		to_sid = ui.input('to_sid', to_sid)
 		if (!offer_con.open && my_sid)
@@ -1315,16 +1523,20 @@ ui.v(1, ui.sp())
 		ui.text('', offer_con.open ? 'Open' : 'Closed')
 	ui.end_h()
 ui.end_v()
-`
+}
+}
 
 let answer_con
 
+{
 function demo_see_screen_init() {
 	signal_server = signal_server || rtc.demo_signal_server()
 	answer_con = answer_con || rtc.answer({signal_server: signal_server})
 }
 
-demos.see_screen = `
+let sid_field = ui.create_field({readonly: true})
+let to_sid = ''
+demos.see_screen = function() {
 
 ui.mt(ui.sp())
 ui.v(1, ui.sp())
@@ -1333,7 +1545,7 @@ ui.v(1, ui.sp())
 	ui.h(0, ui.sp())
 		ui.text('', 'My ID', 0)
 		let my_sid = answer_con.signal_con.sid
-		ui.input('sid', my_sid, null, null, null, true)
+		ui.input('sid', my_sid, sid_field)
 		ui.text('', 'Other ID')
 		to_sid = ui.input('to_sid', to_sid)
 		if (!answer_con.open && my_sid)
@@ -1349,23 +1561,26 @@ ui.v(1, ui.sp())
 	ui.end_scrollbox()
 ui.end_v()
 
-`
+}
+}
 
-enter_see_this_screen = function() {
+if(0) {
+function enter_see_this_screen() {
 	let signal_server = rtc.mock_signal_server()
 	let offer_con  = rtc.offer ({signal_server: signal_server, recv: pr})
 	let answer_con = rtc.answer({signal_server: signal_server, recv: pr})
 }
 
-if(0)
-demos.see_this_screen = `
+let offer_sid_field = ui.create_field({readonly: true})
+let to_sid = ''
+demos.see_this_screen = function() {
 ui.mt(ui.sp())
 ui.v(1, ui.sp())
 	ui.ml(ui.sp())
 	ui.h(0, ui.sp())
 		ui.text('', 'My ID')
 		let my_sid = str(offer_con.signal_con.sid)
-		ui.input('offer_sid', my_sid, null, null, null, true)
+		ui.input('offer_sid', my_sid, offer_sid_field)
 		if (offer_con.open) {
 			if (ui.button('btn_stop_sharing', 'Stop Sharing', 0, 'c', 'c', ui.em(10))) {
 				offer_con.close()
@@ -1386,7 +1601,7 @@ ui.v(1, ui.sp())
 		}
 
 		/*
-		ui.state('in_send').text = json(signal_queue.signals)
+		ui.state('in_send').value = json(signal_queue.signals)
 		ui.input('in_send')
 		if (ui.button('btn_send')) {
 			signal_queue.signals.length = 0
@@ -1407,29 +1622,12 @@ ui.v(1, ui.sp())
 		ui.shared_screen('ss1', answer_con)
 	ui.end_scrollbox()
 ui.end_v()
-`
-
-demos.ast_edit = `
-
-let ast = {
-	root: {
-		s: 'hello',
-		c: [
-			{s: ' '},
-			{s: 'cruel'},
-			{s: '\\n'},
-			{s: '   '},
-			{s: 'world'},
-		],
-	},
+}
 }
 
-//ui.ast_edit('ast_edit1', ast, 1, 's', 's')
-
-`
-
 // document.documentElement.outerHTML
-window.code = `<!DOCTYPE html>
+{
+let code = `<!DOCTYPE html>
 <style attr=val>
 sel.sel #sel,sel[a=b] p:hover ::some :is(header) {
 	prop: val; /* css comment */
@@ -1469,26 +1667,30 @@ if ((x > y && y < z) || !false ?? true) {
 <\/script>
 `
 
-demos.code_edit = `
+demos.code_edit = function() {
 
 ui.code_edit('code_edit1', {code: code})
 
-`
+}
+}
 
 // demo ui -------------------------------------------------------------------
 
 let demos_array; {
 let t = {}
-for (let k in tuts)
-	t['tutorial_'+k] = tuts[k]
 assign(demos, t)
 demos_array = keys(demos)
 }
 
-ui.always_animate = false
-
 let recs_strlen = 0
-function demo_main() {
+ui.main = function() {
+
+	ui.GRID_FAST_PATH = ui.value('grid_config_fast_path')
+	ui.DEBUG = ui.value('btn_debug')
+	ui.set_tui(ui.value('btn_tui'))
+	let lights = ui.value('btn_light')
+	if (lights != (ui.screen_theme() == 'light'))
+		ui.set_screen_theme(lights ? 'light' : 'dark')
 
 	ui.v()
 
@@ -1508,30 +1710,12 @@ function demo_main() {
 				ui.color('link')
 				ui.text('', format_kbytes(recs_strlen, 1), 0, 'r', 'c', 1/0, ui.em(3))
 
-				if (ui.button('btn_light', 'lights', 0)) {
-					ui.set_default_theme(ui.default_theme == 'light' ? 'dark' : 'light')
-					save_demo_state('theme', ui.default_theme)
-				}
-
-				if (ui.button('btn_debug', 'DEBUG', 0)) {
-					ui.DEBUG = !ui.DEBUG
-					save_demo_state('debug', ui.DEBUG)
-				}
-
-				if (ui.button('btn_tui', 'TUI', 0)) {
-					ui.TUI = !ui.TUI
-					save_demo_state('tui', ui.TUI)
-				}
-
-				if (ui.button('btn_animate', 'animate', 0)) {
-					ui.always_animate = !ui.always_animate
-				}
-				if (ui.always_animate)
+				ui.toggle_button('btn_light', null, 'lights', demo_toggle_field, 0)
+				ui.toggle_button('btn_debug', null, 'DEBUG', demo_toggle_field, 0)
+				ui.toggle_button('btn_tui', null, 'TUI', demo_toggle_field, 0)
+				if (ui.toggle_button('btn_animate', null, 'animate',
+						demo_toggle_field, 0))
 					ui.animate()
-
-				ui.text('', 'grid fast path', 0)
-				ui.grid_fast_path =
-					ui.toggle('btn_grid_fast', ui.grid_fast_path, 0)
 
 				ui.color('label')
 				ui.text('', 'canvas-ui v'+ui.VERSION, 1, 'r')
@@ -1541,47 +1725,42 @@ function demo_main() {
 
 		ui.h()
 
-			ui.stack('', 0, 's', 's', ui.em(10))
-				ui.border('r', 'light')
-				ui.sb('demos_list_sb')
-					let i = ui.list('demos_list', demos_array,
-						demos_array.indexOf(selected_demo))
-				ui.end_sb()
-				let demo = demos_array[i]
-				if (demo != selected_demo) {
-					selected_demo = demo
-					save_demo_state('demo', demo)
-				}
-			ui.end_stack()
+			ui.hsplit('demos_split', ui.em(10), 'px')
+				let demo = ui.list('demos_list', demos_array)
+			ui.splitter()
+				ui.h()
 
-			let s = (demos[demo] ?? '').trim()
+					let demo_fn = demos[demo]
 
-			// ui.code_edit('code_edit1', {code: s ?? ''})
+					// ui.code_edit('code_edit1', {
+					// 	code: demo_fn?.toString() ?? '',
+					// })
 
-			if (0) {
-				ui.sb('demo_code_sb', .5)
-					ui.bb('bg1', null, 'r', 'light')
-					ui.font('monospace')
-					ui.p(ui.sp4())
-					if (s)
-						ui.text_lines('demo_text', s, 0, 'l', 't')
-				ui.end_sb()
-			}
+					if (0) {
+						ui.sb('demo_code_sb', .5)
+							ui.bb('bg1', null, 'r', 'light')
+							ui.font('monospace')
+							ui.p(ui.sp4())
+							if (demo_fn)
+								ui.text_lines('demo_text', demo_fn.toString(),
+									0, 'l', 't')
+						ui.end_sb()
+					}
 
-			ui.stack()
-				if (s)
-					eval(s)
-			ui.end_stack()
+					ui.stack()
+						if (demo_fn)
+							demo_fn()
+					ui.end_stack()
+				ui.end_h()
+			ui.end_hsplit()
 
-			if (ui.DEBUG)
+			if (ui.DEBUG && ui.DEBUG_PANE)
 				ui.debug_pane()
 
 		ui.end_h()
 
 	ui.end_v()
 }
-
-ui.main = demo_main
 
 if (remote_demo == 'viewer')
 	ui.main = function() {

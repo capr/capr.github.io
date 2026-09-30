@@ -13,14 +13,16 @@ const ui = _G.ui
 const {
 	pr,
 	isobject,
-	round, min, max, floor, ceil,
+	round, min, max, floor, ceil, abs, clamp,
+	array_move, assign, copy_to_clipboard, empty_array,
+	noop,
 } = glue
 
 const {
 	cx,
 } = ui
 
-ui.grid_fast_path = true
+ui.GRID_FAST_PATH = true
 
 ui.capture_keydown('f1') // browser: help -> grid: key help
 
@@ -39,29 +41,21 @@ ui.icon_def('sort_none'     , 'tabler', '\ueb5a')
 ui.icon_def('arrow_up'      , 'tabler', '\uea25')
 ui.icon_def('arrow_down'    , 'tabler', '\uea16')
 
-ui.widget('treegrid_indent', {
-	create: function(cmd, indent, state) {
-		return ui.cmd(cmd, ui.ct_i(), indent, state)
-	},
-	draw: function(a, i) {
-		let ct_i   = a[i+0]
-		let indent = a[i+1]
-		let state  = a[i+2]
-		let x = a[ct_i+0]
-		let y = a[ct_i+1]
-		let w = a[ct_i+2]
-		let h = a[ct_i+3]
-		cx.fillStyle = 'red'
-		cx.beginPath()
-		cx.rect(x, y, w, h)
-		cx.fill()
-	},
-})
-
 // draw one whole grid column in a single command.
 // each visible cell gets (bg, bg state, fg, text).
 ui.widget('fast_field', {
-	create: ui.cmd,
+	create: function(cmd, x, y0, w, cell_h, pad, align, baseline, n) {
+		let i = ui.cmd_begin(cmd)
+		ui.cmd_add_arg(x)
+		ui.cmd_add_arg(y0)
+		ui.cmd_add_arg(w)
+		ui.cmd_add_arg(cell_h)
+		ui.cmd_add_arg(pad)
+		ui.cmd_add_arg(align)
+		ui.cmd_add_arg(baseline)
+		ui.cmd_add_arg(n)
+		return i
+	},
 	translate: function(a, i, dx, dy) {
 		a[i+0] += dx
 		a[i+1] += dy
@@ -86,13 +80,13 @@ ui.widget('fast_field', {
 			let y = y0 + ri * cell_h
 			let fg_theme
 			if (bg) {
-				let c = ui.bg_color_hsl(bg, bgs)
+				let c = ui.color_obj(bg, bgs)
 				let dark = c[5] ?? c[3] < .5
 				fg_theme = dark ? 'dark' : 'light'
 				cx.fillStyle = c[0]
 				cx.fillRect(x, y, w, cell_h)
 			}
-			cx.strokeStyle = ui.border_color('light', null, fg_theme)
+			cx.strokeStyle = ui.color_css('light', null, fg_theme)
 			cx.beginPath()
 			cx.moveTo(x, y + cell_h - .5)
 			cx.lineTo(x + w, y + cell_h - .5)
@@ -120,10 +114,10 @@ ui.widget('fast_field', {
 			if (text) {
 				let fg_theme
 				if (bg) {
-					let c = ui.bg_color_hsl(bg, bgs)
+					let c = ui.color_obj(bg, bgs)
 					fg_theme = (c[5] ?? c[3] < .5) ? 'dark' : 'light'
 				}
-				cx.fillStyle = ui.fg_color(fg, null, fg_theme)
+				cx.fillStyle = ui.color_css(fg, null, fg_theme)
 				cx.fillText(text, anchor_x, y0 + ri * cell_h + baseline)
 			}
 		}
@@ -178,19 +172,17 @@ function build_help(id, target_i) {
 	ui.popup(id+'.help', 'overlay', target_i, 'b', '[', 0, 0,
 		'change_side constrain')
 		ui.bb_tooltip('bg2', null, 'light', null, ui.sp05())
-		ui.v_tabstops(0)
+		ui.v_aligned(0)
 			for (let line of help_lines) {
 				let ci = line.indexOf(':')
 				let t = ci == -1 ? line : null
 				let key = !t ? line.slice(0, ci).trim() : ''
 				let desc = !t ? line.slice(ci+2).trim() : ''
 				if (t) {
-						ui.scope()
 						ui.bold()
 						ui.color('text')
 						ui.font_size(1.25)
 						ui.text('', t, 0, 'l', 'c')
-						ui.end_scope()
 				} else {
 					ui.pv(ui.sp025())
 					ui.h(0, ui.sp4())
@@ -203,13 +195,11 @@ function build_help(id, target_i) {
 					ui.end_h()
 				}
 			}
-		ui.end_v_tabstops()
+		ui.end_v_aligned()
 	ui.end_popup()
 }
 
 function init(id, e) {
-
-	e.id = id // for errors
 
 	e.cell_border_v_width = 0
 	e.cell_border_h_width = 1
@@ -251,6 +241,7 @@ function init(id, e) {
 		hit_zone = null
 		hit_ri = null
 		hit_fi = null
+		hit_gcol = null
 		hit_indent = null
 		ps = null
 		drag_op = null
@@ -399,9 +390,10 @@ function init(id, e) {
 		let field_focused = cs.field_focused
 
 		let hovering = hit_zone == 'cell' && hit_ri == ri && hit_fi == fi
+		let align = e.field_align(field)
 		let full_width = !build_stage
 			&& ((row_focused && field_focused) || hovering)
-			&& (field.align == 'left' || !field_has_indent(field))
+			&& (align == 'left' || !field_has_indent(field))
 
 		let indent_x = 0
 		let collapsed
@@ -429,16 +421,17 @@ function init(id, e) {
 		let pad_r = sp2
 		let cell_x = x
 		let cell_w = w
-		// because we don't have overflow direction as a concept in the layout
-		// system (only ui.text overflows and always to the right, which is
-		// only good for left align), we need to employ this hack to align the
-		// overflown cell correctly for right and center align.
-		if (full_width && field.builds_text && field.align != 'left') {
+		// because ui.text doesn't support overflow direction (ui.text overflows
+		// always to the right), we need to expand the overflown cell and shift
+		// it left for right and center align.
+		if (full_width && field.builds_text) {
 			let s = e.cell_text_val(row, field)
 			if (s) {
 				cell_w = max(w, ceil(ui.measure_text(cx, s).width) + pad_l + pad_r)
 				let overflow = cell_w - w
-				cell_x = x - (field.align == 'center' ? round(overflow / 2) : overflow)
+				cell_x = x - (
+					align == 'center' ? round(overflow / 2) :
+					align == 'right' ? overflow : 0)
 			}
 		}
 
@@ -449,11 +442,10 @@ function init(id, e) {
 			if (help_open && !build_stage && row_focused && field_focused)
 				build_help(id, cell_i)
 
-			ui.color(fg)
 			if (has_children) {
 				ui.p(indent_x - sp2, 0, sp2, 0)
+				ui.color(fg)
 				ui.icon('', collapsed ? 'node_collapsed' : 'node_expanded')
-				// ui.treegrid_indent(indent_x)
 			}
 			// a popup editor covers the cell instead of replacing it, and
 			// the popup can be moved off the cell to fit on screen.
@@ -461,12 +453,13 @@ function init(id, e) {
 				ui.p(pad_l, 0, pad_r, 0)
 				if (row_focused && field == e.quicksearch_field)
 					ui.mark_text(0, e.quicksearch_text.length)
-				e.build_val(row, field, input_val, true, full_width)
+				e.build_val(row, field, input_val, true, fg, full_width)
 				ui.p(0) // build_val() builds nothing for a value with no text!
 			}
 			if (editing && !build_stage && field.has_editor) {
 				ui.focus_group(true, null, e.editor_id)
 				field.build_editor(e.editor_id, input_val, pad_l, pad_r, h)
+				e.want_dropdown_open = false
 				ui.end_focus_group()
 			}
 			ui.p(0)
@@ -526,7 +519,7 @@ function init(id, e) {
 				if (field._fast_build == null)
 					field._fast_build = field.build == ui.all_field_types.build
 						&& !field.lookup_nav && !field.null_lookup_col
-				field._fast_now = ui.grid_fast_path
+				field._fast_now = ui.GRID_FAST_PATH
 					&& field._fast_build
 					&& !field_has_indent(field)
 					&& field != e.quicksearch_field
@@ -600,8 +593,12 @@ function init(id, e) {
 					} else {
 						text = field.to_text(cs.input_val)
 					}
-					ui.cmd_add_args(cmd_i, cs.bg, cs.bgs, fg, text)
+					ui.cmd_add_arg(cs.bg)
+					ui.cmd_add_arg(cs.bgs)
+					ui.cmd_add_arg(fg)
+					ui.cmd_add_arg(text)
 				}
+				ui.cmd_end(cmd_i)
 			}
 		}
 
@@ -688,8 +685,17 @@ function init(id, e) {
 
 	e.update = function() {
 
+		let s = ui.state(id)
+		s.picked = false
+		s.input_value = undefined
+		let has_input = false
+
 		if (cell_h == null)
 			return
+
+		let value = ui.input_value(e.editor_id)
+		if (value !== undefined)
+			e.set_cell_val(e.focused_row, e.focused_field, value, {input: e})
 
 		if (e.editing
 				&& !ui.focused(id)
@@ -762,6 +768,8 @@ function init(id, e) {
 				ps.w0 = field.w
 			if (ps.dragging)
 				field.w = clamp(ps.w0 + ps.dx, field.min_w, field.max_w)
+			if (ps.drop)
+				e.save_col_w(field)
 			ui.set_cursor('ew-resize')
 		}
 
@@ -1016,7 +1024,7 @@ function init(id, e) {
 							i++
 						}
 						e.group_by = t.join('')
-						e.update_parts({fields: true, rows: true})
+						e.update_parts({fields: true, rows: true, group_by: true})
 
 					} else if (mover.drop_pos != null) { // put it back in grid
 
@@ -1109,12 +1117,9 @@ function init(id, e) {
 				invert_selection: ctrl,
 				input: e,
 			})) {
-				// the picker is built inside the cells frame, so the dropdown
-				// has already read this state for this frame.
-				if (e.is_picker && !hit_indent) {
-					ui.fire(id, 'item_picked', {row: row})
-					ui.rebuild('item_picked')
-				}
+				has_input = true
+				if (e.is_picker && !hit_indent)
+					s.picked = true
 				if (click)
 					e.do_cell_click(row, field, {input: e})
 				// TODO:
@@ -1164,7 +1169,8 @@ function init(id, e) {
 				all = ctrl
 			}
 
-			if (move)
+			if (move) {
+				has_input = true
 				if (e.focus_next_cell(cols, {
 					sel_i: all ? 0 : cols > 0 ? 0 : -1,
 					sel_len: all ? 1/0 : 0,
@@ -1174,6 +1180,7 @@ function init(id, e) {
 					input: e,
 				}))
 					return false
+			}
 
 		}
 
@@ -1222,7 +1229,8 @@ function init(id, e) {
 
 			let [sel_i, sel_len] = e.editing && horiz ? edit_selection() : [0, 1/0]
 
-			if (move)
+			if (move) {
+				has_input = true
 				if (e.focus_cell(true, true, rows, 0, {
 					sel_i: sel_i,
 					sel_len: sel_len,
@@ -1230,13 +1238,14 @@ function init(id, e) {
 					input: e,
 				}))
 					return false
+			}
 
 		}
 
 		// F2: enter edit mode, or toggle the dropdown of the edit in progress
 		if (keydown('f2')) {
 			if (e.editing)
-				focused_field.toggle_dropdown(e.editor_id)
+				focused_field.toggle_dropdown?.(e.editor_id)
 			else
 				e.enter_edit({advance_on_exit: true})
 			return false
@@ -1245,11 +1254,12 @@ function init(id, e) {
 		// Enter: toggle edit mode, and navigate on exit
 		if (keydown('enter')) {
 			if (e.quicksearch_text) {
+				has_input = true
 				e.quicksearch(e.quicksearch_text, focused_row, shift ? -1 : 1)
 				return false
 			} else if (e.is_picker) {
-				ui.fire(id, 'item_picked', {row: focused_row})
-				ui.rebuild('item_picked')
+				has_input = true
+				s.picked = true
 				return false
 			} else if (!e.editing) {
 				e.enter_edit({open_popup: !ctrl})
@@ -1271,7 +1281,7 @@ function init(id, e) {
 					e.exit_edit({input: e, cancel: true})
 					return false
 				}
-			} else if (focused_row && focused_field) {
+			} else if (!e.is_picker && focused_row && focused_field) {
 				let row = focused_row
 				if (row.is_new && !e.is_row_user_modified(row, true))
 					e.remove_row(row, {input: e, refocus: true})
@@ -1301,6 +1311,11 @@ function init(id, e) {
 		}
 
 		if (keydown('delete')) {
+
+			if (e.is_picker) {
+				s.input_value = null
+				return false
+			}
 
 			// delete on an already-empty cell leaves edit mode. the key is
 			// spent on that, so it must not go on to delete rows as well.
@@ -1337,8 +1352,10 @@ function init(id, e) {
 		}
 
 		if (!e.editing && keydown('backspace')) {
-			if (e.quicksearch_text)
+			if (e.quicksearch_text) {
+				has_input = true
 				e.quicksearch(e.quicksearch_text.slice(0, -1), focused_row)
+			}
 			return false
 		}
 
@@ -1366,6 +1383,7 @@ function init(id, e) {
 		// printable chars search. while editing they belong to the editor.
 		let typed = focused && !e.editing && ui.key_chars()
 		if (typed) {
+			has_input = true
 			e.quicksearch(e.quicksearch_text + typed, focused_row)
 			return false
 		}
@@ -1375,40 +1393,67 @@ function init(id, e) {
 			ui.capture_keys()
 		}
 
+		if (e.is_picker && has_input)
+			s.input_value = e.focused_row ?? null
+
 		if (!ui.window_focused() || ui.window_focusing)
 			e.exit_edit()
 
-		while (e.editing) {
+		// if editing with an editor:
+		// - write editor's value to the cell.
+		// - exit edit when the editor's dropdown is closed, reverting unless
+		// value picked.
+		// - on advance_on_exit + advance_on_enter + pick, move to next cell.
+		// the grid builds the editor later in this frame, so until then the
+		// editor's state is that of the cell that the edit came from: the
+		// grid must not read the editor on the frame that it moves the edit
+		// to another cell.
+		if (e.editing && e.focused_field.has_editor) {
 			let row = e.focused_row
 			let field = e.focused_field
-			if (!field.has_editor)
-				break
 			let editor_id = e.editor_id
-			let ev = field.dropdown_closed(editor_id)
-			let v0 = e.cell_input_val(row, field)
-			let v1 = field.editor_value(editor_id, v0)
-			if (v1 !== v0)
-				e.set_cell_val(row, field, v1, {input: e})
-			if (ev) {
-				let advance = ev.picked
+			let has_picked_val
+			if (field.editor_value) {
+				let v0 = e.cell_input_val(row, field)
+				let v1 = field.editor_value(editor_id, v0)
+				if (v1 !== v0) {
+					e.set_cell_val(row, field, v1, {input: e})
+					has_picked_val = true
+				}
+			}
+			let closed = field.dropdown_closed?.(editor_id)
+				&& (field.edits_in_popup || has_picked_val)
+			if (closed) {
+				let picked = field.dropdown_picked(editor_id)
+				let advance = picked
 					&& e.advance_on_exit && e.advance_on_enter
-				e.exit_edit({input: e, cancel: !ev.picked})
+				e.exit_edit({input: e, cancel: !picked})
 				if (advance)
 					advance_edit(false, 1)
 			}
-			if (!e.editing || (e.focused_row == row && e.focused_field == field))
-				break
 		}
 
 	}
 
 	e.build = function(id, opt, fr, align, valign, min_w, min_h) {
 
+		e.set_param_vals(opt.param_vals)
+
+		let value
+		if (e.is_picker) {
+			value = ui.set_value(id, ui.state(id), opt.value)
+			let ri = value ? e.row_index(value) : false
+			if (e.rows[ri] != value)
+				ri = false
+			if (e.focused_row != e.rows[ri])
+				e.focus_cell(ri, true)
+		}
+
 		// set layout vars
 
 		sp  = ui.sp1()
 		sp2 = ui.sp2()
-		font_size = ui.get_font_size()
+		font_size = ui.em(1)
 		line_height = font_size * 1
 		cell_h = round(line_height + 2 * sp + e.cell_border_h_width)
 		header_h = cell_h
@@ -1511,7 +1556,6 @@ function init(id, e) {
 								// sort icon
 								let icon_id = id+'.sort_icon.'+col
 								if (field.sortable) {
-									ui.scope()
 									let dir = e.sort_dir(field)
 									ui.color(dir ? 'label' : 'faint',
 										(hit_zone == 'sort_icon' && hit_gcol == col) ? 'hover' : null)
@@ -1521,7 +1565,6 @@ function init(id, e) {
 										dir          && (pri ? 'sort_desc' : 'sort_desc') ||
 										'sort_none'
 									, 0)
-									ui.end_scope()
 								}
 							ui.end_h()
 						ui.end_stack()
@@ -1549,9 +1592,6 @@ function init(id, e) {
 						col_move ? 'bg2' : col_group ? 'bg0' : 'bg1', null,
 						col_move ? 'blr' : 'br', 'intense')
 
-					if (col_group)
-						ui.color('faint')
-
 					let max_min_w = noclip ? null : max(0,
 						field._w
 							- 2 * sp2
@@ -1561,29 +1601,29 @@ function init(id, e) {
 					let pri = e.sort_priority(field)
 					let align = e.field_align(field)
 
-					if (align != 'right')
+					if (align != 'right') {
+						ui.color(col_group ? 'faint' : null)
 						ui.text('', field.label, 1, align, 'c', max_min_w)
+					}
 
 					let icon_id = id+'.sort_icon.'+field.name
 
 					if (field.sortable) {
-						ui.scope()
-
-						if (!col_group)
-							ui.color(dir ? 'label' : 'faint',
-								(hit_zone == 'sort_icon' && hit_fi == field.index) ? 'hover' : null)
+						ui.color(dir && !col_group ? 'label' : 'faint',
+							!col_group && hit_zone == 'sort_icon' && hit_fi == field.index
+								? 'hover' : null)
 
 						ui.icon(icon_id,
 							dir == 'asc' && (pri ? 'sort_asc'  : 'sort_asc' ) ||
 							dir          && (pri ? 'sort_desc' : 'sort_desc') ||
 							'sort_none'
 						, 0)
-
-						ui.end_scope()
 					}
 
-					if (align == 'right')
+					if (align == 'right') {
+						ui.color(col_group ? 'faint' : null)
 						ui.text('', field.label, 1, align, 'c', max_min_w)
+					}
 
 				ui.end_h()
 			}
@@ -1615,16 +1655,12 @@ function init(id, e) {
 						ui.ml(x)
 						ui.stack('', 0, 'l', 't', 0, header_h)
 							ui.popup('', 'overlay', null, 't', 'c')
-								ui.scope()
 								ui.color('marker')
 								ui.icon('', 'arrow_down')
-								ui.end_scope()
 							ui.end_popup()
 							ui.popup('', 'overlay', null, 'b', 'c')
-								ui.scope()
 								ui.color('marker')
 								ui.icon('', 'arrow_up')
-								ui.end_scope()
 							ui.end_popup()
 						ui.end_stack()
 					}
@@ -1646,6 +1682,8 @@ function init(id, e) {
 		ui.end_v()
 		ui.end_stack()
 
+		return value
+
 	}
 
 }
@@ -1653,7 +1691,7 @@ function init(id, e) {
 function create_grid(id, opt) {
 	let nav = opt.nav
 	if (!nav) {
-		nav = ui.nav(opt)
+		nav = ui.nav(id, opt)
 		ui.on_free(id, nav.free)
 	}
 	init(id, nav)

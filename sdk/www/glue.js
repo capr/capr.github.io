@@ -74,6 +74,7 @@ DEBUGGING
 	trace_if(cond, ...)
 	pr(...)
 	warn(...)
+	warn_once(...)
 	debug(...)
 	log(...)
 	check(v, ...) -> v
@@ -113,6 +114,7 @@ STRINGS
 	catany(sep, ...)
 	catall(...)
 	captures(s, re) -> [capture1, ...]
+	utf8_len(s) -> n                       byte length of s encoded as UTF-8
 
 ARRAYS
 
@@ -453,6 +455,14 @@ let warn  = console.warn
 let debug = console.debug
 let trace = console.trace
 
+let warns = {}
+function warn_once(...args) {
+	let k = [...args].join(' ')
+	if (warns[k]) return
+	warns[k] = 1
+	warn(...args)
+}
+
 G.DEBUG_SNAP_NUMS = 1
 function snap_nums(a) {
 	if (!DEBUG_SNAP_NUMS) return a
@@ -717,6 +727,15 @@ function captures(s, re) {
 	let m = s.match(re)
 	if (m) m.remove(0)
 	return m || empty_array
+}
+
+// 2x faster than TextEncoder().encode().length
+let utf8_len_buf = new Uint8Array(0)
+function utf8_len(s) {
+	let max_n = s.length * 3
+	if (utf8_len_buf.length < max_n)
+		utf8_len_buf = new Uint8Array(nextpow2(max_n))
+	return tenc.encodeInto(s, utf8_len_buf).written
 }
 
 // arrays --------------------------------------------------------------------
@@ -2505,11 +2524,11 @@ random,
 PI, sin, cos, tan, rad, deg, asin, acos, atan, atan2,
 format_base, dec,
 noop, return_true, return_false, return_arg, wrap, do_before, do_after,
-pr, _, warn, debug, trace, trace_if, assert,
+pr, _, warn, warn_once, debug, trace, trace_if, assert,
 push_log, push_log_if, pop_log, log, log_if, check,
 callable_constructor, inherit_properties,
 property, method, override, alias, override_property_setter, override_property_getter,
-subst, display_name, lower_ai_ci, find_ai_ci, escape_regexp, catany, catall, esc, words, wordset, captures,
+subst, display_name, lower_ai_ci, find_ai_ci, escape_regexp, catany, catall, esc, words, wordset, captures, utf8_len,
 array, empty_array, range, array_resize, extend, array_set,
 insert, insert_n, remove, remove_n, remove_value, replace_value, remove_values, array_move, array_equals,
 binsearch, uniq_sorted, group_sorted, remove_duplicates,

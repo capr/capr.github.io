@@ -1,4 +1,4 @@
-/* ---------------------------------------------------------------------------
+/*
 
 	UI nav objects.
 	Written by Cosmin Apreutesei. Public Domain.
@@ -21,7 +21,7 @@ Rowset structure:
 
 Creating a nav:
 
-	ui.nav({rowset_name: NAME}) -> e
+	ui.nav(id, {rowset_name: NAME}) -> e
 
 		Loads ui.rowsets[NAME], or the rowset from the server at
 		/rowset.json/NAME.
@@ -52,12 +52,11 @@ Sources of field attributes, in precedence order:
 	field type    ui.field_types[TYPE] = {ATTR: VAL}
 	global        ui.all_field_types[ATTR] = VAL
 
-Field attributes:
+Nav field attributes:
 
 	identification:
 
 		name           : field name (defaults to field's numeric index)
-		type           : for choosing a field preset: number, bool, etc.
 
 	rendering:
 
@@ -76,53 +75,20 @@ Field attributes:
 
 		client_default : default value/generator that new rows are initialized with.
 		has_server_default: the server fills this in, so it can be left empty.
-		readonly       : prevent editing.
 		build_editor   : f(id, v, pad_l, pad_r, h) -> v   build the widgets
 		                 that edit v and give back what the user made of it.
 		                 pad_l, pad_r, h: the box the cell drew v in. the
 		                 cell has no vertical padding: it centers v in its
-		                 height instead. an editor that ends the edit fires
-		                 'closed' on id.
+		                 height instead. an editor with a picker ends the
+		                 edit by closing it.
 		edits_in_popup : build_editor builds a popup: no editor in the cell.
-
-		to_input       : f(v) -> s   value as editable text.
-		from_input     : f(s) -> v   editable text back to value (or undefined)
-
-		enum_values    : enum type: 'v1 ...' | ['v1', ...]
-		enum_labels    : enum type: {v->label}
-		enum_info      : enum type: {v->info}
-
-	validation:
-
-		not_null       : don't allow null (false).
-		required       : don't allow null (false).
-		maxlen         : max text length (256).
-
-		min            : min value (0).
-		max            : max value (inf).
-		decimals       : max number of decimals (0).
-		scale          : number type: value is stored times this (1).
 
 	formatting:
 
-		build          : f(v, mode, [row]) -> true   build the value.
-		build          : f(v, [row]) -> s            return plain text display value.
+		build          : f(v, mode, [fg], [row]) -> true   build the value.
 
-		build_text    : f(s, [mode], [row]) -> true|s    build or return text.
-		build_null    : f([mode], [row]) -> true|s       build or return text.
-
-		align          : 'left'|'right'|'center'
-		attr           : custom value for html attribute `field`, for styling
-		null_text      : plain text display value for null
-		empty_text     : plain text display value for ''
-
-		magnitude          : filesize, count types: unit to pin to ('K', 'M', ...)
-		magnitude_decimals : filesize, count types: decimals at that magnitude
-		gray_min           : filesize type: below this, the value draws gray
-
-		precision      : date, datetime, time, timeofday types
-
-		duration_format: see duration() in glue.js
+		build_text    : f(s, [mode], [fg], [row]) -> true|s    build or return text.
+		build_null    : f([mode], [fg], [row]) -> true|s       build or return text.
 
 		button_options : button type: options to pass to button()
 
@@ -198,7 +164,7 @@ Indexing:
 
 Master-detail:
 	needs:
-		e.params <- 'NAV_ID.[COL1=]PARAM1,[COL2=]PARAM2 WIDGET_ID=PARAM ...'
+		e.set_param_vals([{COL1: VAL1, ...}, ...] | false | null)
 
 Tree:
 	state:
@@ -383,6 +349,8 @@ Editing cells:
 		e.do_cell_click(row, field, ev)
 
 Loading from server:
+	config:
+		e.validate_on_load        true
 	needs:
 		e.rowset_name
 	publishes:
@@ -424,8 +392,8 @@ Loading & saving from/to memory:
 
 Cell display val, text val and building:
 	publishes:
-		e.build_val([row], field, v, [mode]) -> true|s
-		e.build_cell(row, field, [mode]) -> true|s
+		e.build_val([row], field, v, [mode], [fg]) -> true|s
+		e.build_cell(row, field, [mode], [fg]) -> true|s
 	announces:
 		^^col_vals_changed(field)
 
@@ -445,23 +413,25 @@ const _G = window
 const ui = _G.ui
 
 const {
-	num, bool, isarray, isstr,
+	num, dec, isarray, isstr, isnum, isbool, isobject,
 	assert,
 	strict_sign, round, abs, clamp,
-	set, map, words, array_move,
+	set, map, words, keys, array_move, captures, count_keys,
 	do_before, do_after, property, override,
-	assign, assign_opt, attr, empty,
+	assign, assign_opt, attr, empty, empty_array,
 	remove, insert,
-	noop, return_true, return_arg,
+	noop, return_true, return_arg, return_false,
 	memoize,
 	S,
 	display_name,
-	parse_date, format_date,
+	parse_date, format_date, parse_timeofday,
 	format_base,
 	format_kbytes, format_kcount, format_timeofday, format_timeago, format_duration,
+	clock, day, days, floor, isfunc, json, max, min, month, month_year,
+	pr, random, remove_value, snap, str, time, url_format, url_parse, week,
+	wrap, year, year_of,
+	announce, href, ajax, copy_to_clipboard,
 } = glue
-
-// utilities ------------------------------------------------------------------
 
 function map_keys_different(m1, m2) {
 	if (m1.size != m2.size)
@@ -472,24 +442,30 @@ function map_keys_different(m1, m2) {
 	return false
 }
 
-// global field defs ---------------------------------------------------------
-
-let field_types      = ui.field_types      = {} // {TYPE->{K: V}}
-let all_field_types  = ui.all_field_types  = {} // {K: V}
-let rowset_col_attrs = ui.rowset_col_attrs = {} // {ROWSET.COL->{K:V}}
+//// ROWSETS -----------------------------------------------------------------
 
 // rowsets defined in JS, looked up by the same name a server rowset would
 // have, so that `rowset_name` resolves to either without the nav caring.
 ui.rowsets = {} // {NAME->rowset}
 
-/* ref-counted garbage-collected shared navs for lookup rowsets.
+// field attributes to set client-side (unserializables, presentation, etc.).
+ui.rowset_col_attrs = {} // {ROWSET.COL->{K:V}}
 
-The registry owns the navs: being in shared_navs is what keeps one alive.
-ref() and unref() only count users. A nav that no field is using anymore is
-kept around to be reused, and is only freed once the totals below are
-exceeded, least-recently-used first.
+function nav_ajax(opt) {
+	let rowset = ui.rowsets[opt.rowset_name]
+	if (rowset) // js rowset
+		opt.xhr = {
+			wait: opt.wait ?? rowset.wait,
+			response: rowset,
+		}
+	return ajax(opt)
+}
 
-*/
+//// SHARED NAVS -------------------------------------------------------------
+
+// Ref-counted garbage-collected shared navs for lookup rowsets.
+// Navs are kept in a LRU and freed based on number of rows cached (crude).
+
 {
 let max_unused_nav_count = 20
 let max_unused_row_count =  1000000
@@ -546,7 +522,7 @@ ui.shared_nav = function(opt) {
 
 	let ln = shared_navs[name]
 	if (!ln) {
-		ln = ui.nav(opt)
+		ln = ui.nav('shared_nav.'+name, opt)
 		ln.shared_name = name // for gc() to drop the right key
 		ln.rc = 0
 		ln.ref = function() {
@@ -566,36 +542,35 @@ ui.shared_navs = shared_navs // for debugging
 
 } // end shared nav scope
 
-function nav_ajax(opt) {
-	let rowset = ui.rowsets[opt.rowset_name]
-	if (rowset) // js rowset
-		opt.xhr = {
-			wait: opt.wait ?? rowset.wait,
-			response: rowset,
-		}
-	return ajax(opt)
-}
-
-let errors_no_messages = []
-errors_no_messages.failed = true
-errors_no_messages.client_side = true
-
-let lookup_editor // defined with the field types
-
-// the field of the lookup nav whose value is shown in place of this
-// field's own value.
-function lookup_display_field(field) {
-	let ln = field.lookup_nav
+function lookup_display_field(field, ln = field.lookup_nav) {
 	if (!ln) return
 	return (field.display_col != null && ln.optfld(field.display_col))
 		|| ln.display_field
 }
 
-ui.nav = function(opt) {
+function lookup_nav(rowset_name) {
+	return ui.shared_nav({
+		rowset_name     : rowset_name,
+		is_picker       : true,
+		can_focus_cells : false,
+		can_add_rows    : false,
+		can_remove_rows : false,
+		can_change_rows : false,
+		can_move_rows   : false,
+	})
+}
 
-	let e = {}
+// TODO: see what this is for...
+let errors_no_messages = []
+errors_no_messages.failed = true
+errors_no_messages.client_side = true
 
-	// instance utils ---------------------------------------------------------
+ui.nav = function(id, opt) {
+
+	assert(id, 'nav id required')
+	let e = {id}
+
+	/// instance utils --------------------------------------------------------
 
 	e.announce = function(ev, ...args) {
 		announce(ev, e, ...args)
@@ -624,7 +599,7 @@ ui.nav = function(opt) {
 	e.warn  = warn
 	e.debug = debug
 
-	// behavior options -------------------------------------------------------
+	/// behavior options ------------------------------------------------------
 
 	e.can_add_rows               = true
 	e.can_remove_rows            = true
@@ -655,7 +630,9 @@ ui.nav = function(opt) {
 
 	e.save_row_states            = false
 
-	// init/update/free -------------------------------------------------------
+	e.validate_on_load           = true
+
+	/// init/update/free ------------------------------------------------------
 
 	let rowset, rowset_name, rowset_url
 
@@ -670,7 +647,8 @@ ui.nav = function(opt) {
 	}
 
 	// ev: reload, reset, free,
-	//   fields, rows, filters, row_order, row_visibility, input
+	//   fields, cols, group_by, rows, filters, row_order, row_visibility,
+	//   input
 	e.update_parts = update_parts
 	function update_parts(ev) {
 
@@ -728,7 +706,7 @@ ui.nav = function(opt) {
 			e.changed_rows = null // set(row)
 			rows_moved = false
 
-			e.row_validator = create_validator(e)
+			e.row_validator = ui.create_validator(e)
 
 			// free all fields
 
@@ -785,16 +763,16 @@ ui.nav = function(opt) {
 				if (field.readonly)
 					continue
 
-				field.validator = create_validator(field)
-
 				// field.validator_NAME = rule adds a rule named NAME.
+				let own_rules = []
 				for (let k in field) {
 					if (k.startsWith('validator_')) {
 						let rule = field[k]
 						rule.name = k.replace(/^validator_/, '')
-						field.validator.add_rule(rule)
+						own_rules.push(rule)
 					}
 				}
+				field.validator = ui.create_validator(field, own_rules)
 
 				// parsing these here after we have a parser as they depend on type.
 				if (field.min != null) field.min = field.validator.parse(field.min)
@@ -820,28 +798,29 @@ ui.nav = function(opt) {
 
 			// validate all rows
 
-			for (let row of e.all_rows) {
-				let cells_failed
-				for (let field of e.all_fields) {
-					if (field.readonly)
-						continue
-					if (field.validator) {
-						let iv = e.cell_input_val(row, field)
-						let failed = !field.validator.validate(iv, false)
-						if (!field.validator.parse_failed)
-							row[field.val_index] = field.validator.value
-						if (failed) {
-							e.set_cell_state_for(row, field, 'errors', errors_no_messages)
-							cells_failed = true
+			if (e.validate_on_load)
+				for (let row of e.all_rows) {
+					let cells_failed
+					for (let field of e.all_fields) {
+						if (field.readonly)
+							continue
+						if (field.validator) {
+							let iv = e.cell_input_val(row, field)
+							let failed = !field.validator.validate(iv, false)
+							if (!field.validator.parse_failed)
+								row[field.val_index] = field.validator.value
+							if (failed) {
+								e.set_cell_state_for(row, field, 'errors', errors_no_messages)
+								cells_failed = true
+							}
 						}
 					}
+					let row_failed = !e.row_validator.validate(row, false)
+					if (cells_failed || row_failed)
+						e.set_row_state_for(row, 'invalid', true)
+					if (row_failed)
+						e.set_row_state_for(row, 'errors', errors_no_messages)
 				}
-				let row_failed = !e.row_validator.validate(row, false)
-				if (cells_failed || row_failed)
-					e.set_row_state_for(row, 'invalid', true)
-				if (row_failed)
-					e.set_row_state_for(row, 'errors', errors_no_messages)
-			}
 
 			update_fields = true
 			update_rows = true
@@ -850,6 +829,11 @@ ui.nav = function(opt) {
 		// init visible fields
 
 		if (update_fields) {
+
+			if (ev.cols)
+				ui.save_state(e.id, 'cols', e.cols)
+			if (ev.group_by)
+				ui.save_state(e.id, 'group_by', e.group_by)
 
 			e.fields = []
 
@@ -899,10 +883,9 @@ ui.nav = function(opt) {
 
 			// init tree field
 			if (e.is_tree) {
-				e.tree_field = check_field('tree_col',
-					e.tree_col ?? rowset?.tree_col)
-				if (e.is_tree && !e.tree_field)
-					e.tree_field = e.fields[0]
+				let col = e.tree_col ?? rowset?.tree_col
+				e.tree_field = check_field('tree_col', col) ?? e.fields[0]
+				e.tree_field.align = 'left'
 			}
 
 			// remove references to invisible fields.
@@ -998,7 +981,7 @@ ui.nav = function(opt) {
 
 	}
 
-	// fields utils -----------------------------------------------------------
+	/// fields utils ----------------------------------------------------------
 
 	function optfld(col) {
 		if (isstr(col))
@@ -1067,13 +1050,7 @@ ui.nav = function(opt) {
 	}
 	let pk_vals = []
 
-	// fields array matching 1:1 to row contents ------------------------------
-
-	// the field is the subject of the event, not its name: listeners get
-	// (nav, field, ...) the same way a nav event gives them (nav, ...).
-	function field_announce(ev, ...args) {
-		e.announce(ev, this, ...args)
-	}
+	/// fields array matching 1:1 to row contents -----------------------------
 
 	function init_field(f, fi) {
 
@@ -1096,16 +1073,22 @@ ui.nav = function(opt) {
 		field.nav = e
 
 		let ct = e.col_attrs && e.col_attrs[name]
-		let rt = rowset_name && rowset_col_attrs[rowset_name+'.'+name]
+		let rt = rowset_name && ui.rowset_col_attrs[rowset_name+'.'+name]
 		let type = rt && rt.type || ct && ct.type || f.type || 'text'
-		let tt = field_types[type]
-		let att = all_field_types
+		let tt = ui.field_types[type]
+		let att = ui.all_field_types
 
 		assign_opt(field, att, tt, f, rt, ct)
 
+		let saved_w = ui.saved_state[e.id+'.col_ws']?.[name]
+		if (saved_w != null)
+			field.w = saved_w
+
 		field.label ??= display_name(field.given_name || name)
-		if (field.enum_values != null)
-			field.known_values = set(words(field.enum_values))
+		if (field.enum_values != null) {
+			field.enum_values = words(field.enum_values)
+			field.known_values = set(field.enum_values)
+		}
 
 		e.all_fields[fi] = field
 		e.all_fields_map[name] = field
@@ -1115,10 +1098,14 @@ ui.nav = function(opt) {
 		if (field.lookup_nav)
 			assign(field, lookup_editor)
 
-		field.announce = field_announce // for validator
-
 		if (e.init_field)
 			e.init_field(field)
+
+		// re-creating the field after all properties are set creates a single
+		// hidden class for all fields (shaves off 0.1ms on a full screen grid).
+		field = {...field}
+		e.all_fields[fi] = field
+		e.all_fields_map[name] = field
 
 		return field
 	}
@@ -1137,7 +1124,7 @@ ui.nav = function(opt) {
 		e.do_after('free_field', f)
 	}
 
-	// all_fields subset in custom order --------------------------------------
+	/// all_fields subset in custom order -------------------------------------
 
 	e.field_index = function(field) {
 		return field && field.index
@@ -1150,7 +1137,7 @@ ui.nav = function(opt) {
 			e.fields[i].index = i
 	}
 
-	// visible cols list ops --------------------------------------------------
+	/// visible cols list ops -------------------------------------------------
 
 	function cols_from_fields(fields) {
 		let cols = fields
@@ -1187,11 +1174,15 @@ ui.nav = function(opt) {
 		return fields
 	}
 
+	e.save_col_w = function(field) {
+		ui.save_state(e.id+'.col_ws', field.name, field.w)
+	}
+
 	e.showhide_field = function(field, on, at_fi) {
 		let fields = showhide_field(field, on, at_fi)
 		if (fields) {
 			e.cols = cols_from_fields(fields)
-			update_parts({fields: true})
+			update_parts({fields: true, cols: true})
 		}
 	}
 
@@ -1199,7 +1190,7 @@ ui.nav = function(opt) {
 		let fields = move_field(fi, over_fi)
 		if (fields) {
 			e.cols = cols_from_fields(fields)
-			update_parts({fields: true})
+			update_parts({fields: true, cols: true})
 		}
 	}
 
@@ -1211,108 +1202,16 @@ ui.nav = function(opt) {
 			.filter(cg => cg.length)
 		e.group_by = format_group_defs(col_groups, e.groups.range_defs)
 		e.cols = cols_from_fields(fields)
-		update_parts({fields: true, rows: true})
+		update_parts({fields: true, rows: true, cols: true, group_by: true})
 	}
 
-	/* params -----------------------------------------------------------------
-
-	- supports server-side filtering for server-based navs.
-	- supports client-side filtering for client-side navs.
-	- supports multiple param navs and multiple params per param nav.
-	- new rows get assigned current param values on matching fields.
-	- cascade-updates foreign keys when master rows are updated.
-	- cascade-removes rows when master rows are removed.
-
-	*/
+	/// params ----------------------------------------------------------------
 
 	/*
-	e.prop('params', {parse: parse_params}) // "ID1.[COL1=]PARAM1,[COL2=]PARAM2,... ..."
-	e.set_params = params_changed
+	- supports server-side filtering for server-based navs.
+	- supports client-side filtering for client-side navs.
+	- new rows get assigned current param values on matching fields.
 	*/
-
-	function parse_params(params_s) {
-		if (!params_s)
-			return null
-		let pm = map() // {[nav_id|nav]->{col->param}}
-		for (let param_s of words(params_s)) {
-			let p = param_s.split('.')
-			let id = p[0]
-			let maps_s = p[1]
-			let m = map() // {col->param}
-			for (let map_s of maps_s.split(',')) {
-				let p = map_s.split('=')
-				let col = p[0] || map_s
-				let param = p[1] || col
-				m.set(col, param)
-			}
-			pm.set(id, m)
-		}
-		return pm
-	}
-
-	function collect_param_vals() {
-		if (!e.params)
-			return null
-		let pv
-		for (let [param_nav, pmap] of e.params) {
-			let te = isstr(param_nav) ? window[param_nav] : param_nav
-			if (!te)
-				return false
-			let pv1 = []
-			if (te.isnav) {
-				if (!te.ready)
-					return false
-				if (!te.selected_rows.size)
-					return false
-				for (let [row] of te.selected_rows) {
-					let vals = {}
-					for (let [col, param] of pmap) {
-						let field = te.fld(col)
-						if (!field) {
-							warn('param nav is missing col', col)
-							return false
-						}
-						let v = te.cell_val(row, field)
-						vals[param] = v
-					}
-					pv1.push(vals)
-				}
-			} else {
-				warn('param widget is not a nav', te.id)
-				return false
-			}
-			if (!pv) {
-				pv = pv1
-			} else {
-				// cross-join the param val set from a secondary master nav
-				// with the current param val set, eg. given two param val sets
-				// `pv = v1 || v2` and `pv1 = v3 || v4`, then `pv && pv1` expands to
-				// `(v1 && v3) || (v1 && v4) || (v2 && v3) || (v2 && v4)`.
-				let pv0 = pv
-				pv = []
-				for (let vals1 of pv1)
-					for (let vals0 of pv0) {
-						pv.push(assign({}, vals0, vals1))
-					}
-			}
-		}
-
-		return pv
-	}
-
-	function update_param_vals() {
-		let pv0 = e.param_vals
-		let pv1 = collect_param_vals()
-		// check if new param vals are the same as the old ones to avoid
-		// reloading the rowset if the params didn't really change.
-		if (pv1 === pv0 || json(pv1) == json(pv0))
-			return
-		e.param_vals = pv1
-		e.disable('no_param_vals', pv1 === false)
-		e.announce('tabname_changed')
-		e.announce('params_changed')
-		return true
-	}
 
 	// A client_nav doesn't have a rowset binding. Instead, changes are saved
 	// to either row_vals or row_states. Also, it filters itself based on params.
@@ -1320,9 +1219,13 @@ ui.nav = function(opt) {
 		return !!ui.rowsets[rowset_name]
 	}
 
-	function params_changed() {
-		if (!update_param_vals())
+	e.set_param_vals = function(param_vals) {
+		// check if new param vals are the same as the old ones to avoid
+		// reloading the rowset if the params didn't really change.
+		if (param_vals === e.param_vals
+			|| json(param_vals) == json(e.param_vals))
 			return
+		e.param_vals = param_vals
 		if (is_client_nav()) { // re-filter and re-focus.
 			e.unfocus_focused_cell({cancel: true})
 			update_parts({filters: true})
@@ -1332,67 +1235,7 @@ ui.nav = function(opt) {
 		}
 	}
 
-	function is_param_nav(te) {
-		return e.params.has(te) || (te.id && e.params.has(te.id))
-	}
-
-	/*
-	e.listen('selected_rows_changed', function(te) {
-		if (!e.params)
-			return
-		if (!is_param_nav(te))
-			return
-		params_changed()
-	})
-
-	e.listen('cell_state_changed', function(te, row, field, changes) {
-		if (!('val' in changes))
-			return
-		if (!is_param_nav(te))
-			return
-		if (!update_param_vals())
-			return
-		if (is_client_nav()) { // cascade-update foreign keys.
-			let pmap = e.params.get(te) || e.params.get(te.id)
-			let col = pmap.get(field.name)
-			if (!col)
-				return
-			let our_field = fld(col)
-			for (let row of e.all_rows)
-				if (e.cell_val(row, field) === old_val)
-					e.set_cell_val(row, field, val)
-		} else {
-			e.reload()
-		}
-	})
-
-	function param_vals_match(master_nav, e, params, master_row, row) {
-		for (let [master_col, col] of params) {
-			let master_field = master_nav.all_fields_map[master_col]
-			let master_val = master_nav.cell_val(master_row, master_field)
-			let field = e.all_fields_map[col]
-			let val = e.cell_val(row, field)
-			if (master_val !== val)
-				return false
-		}
-		return true
-	}
-	e.listen('row_state_changed', function(te, master_row, removed) {
-		if (!is_param_nav(te))
-			return
-		if (is_client_nav()) { // cascade-remove detail rows.
-			let params = param_map(e.params)
-			for (let row of e.all_rows)
-				if (param_vals_match(this, e, params, master_row, row)) {
-					e.begin_set_state(row)
-					e.set_row_state('removed', removed, false)
-					e.end_set_state()
-				}
-		}
-	})
-	*/
-
-	// filtered and custom-sorted subset of all_rows --------------------------
+	/// filtered and custom-sorted subset of all_rows -------------------------
 
 	e.row_index = function(row) {
 		return row && row[e.all_fields.length]
@@ -1404,7 +1247,7 @@ ui.nav = function(opt) {
 			e.rows[i][index_fi] = i
 	}
 
-	// editing utils ----------------------------------------------------------
+	/// editing utils ---------------------------------------------------------
 
 	e.can_actually_add_rows = function() {
 		return e.can_add_rows
@@ -1466,7 +1309,7 @@ ui.nav = function(opt) {
 			return S('no_records_selected', 'No records selected')
 	}
 
-	// navigation and selection -----------------------------------------------
+	/// navigation and selection ----------------------------------------------
 
 	e.property('focused_row_index'   , () => e.row_index(e.focused_row))
 	e.property('focused_field_index' , () => e.field_index(e.focused_field))
@@ -1863,7 +1706,7 @@ ui.nav = function(opt) {
 		})
 	}
 
-	// vlookup ----------------------------------------------------------------
+	/// vlookup ---------------------------------------------------------------
 
 	// cols        : 'col1 ...' | fi | field | [col1|field1,...]
 	// range_defs  : {col->{freq:, unit:, offset:}}
@@ -2040,7 +1883,7 @@ ui.nav = function(opt) {
 			indices[cols][method](...args)
 	}
 
-	// groups -----------------------------------------------------------------
+	/// groups ----------------------------------------------------------------
 
 	function flatten(t, path, label_path, depth, add_group, arg1, arg2) {
 		let path_pos = path.length
@@ -2188,7 +2031,7 @@ ui.nav = function(opt) {
 
 	}
 
-	// tree -------------------------------------------------------------------
+	/// tree ------------------------------------------------------------------
 
 	// flat row list: every row is a root with no children. is_tree and
 	// is_grouped are decided in update_parts() and are not touched here.
@@ -2296,7 +2139,7 @@ ui.nav = function(opt) {
 
 	}
 
-	// row moving -------------------------------------------------------------
+	/// row moving ------------------------------------------------------------
 
 	function is_parent_of(row, check_row) {
 		if (!row.parent_row)
@@ -2323,7 +2166,7 @@ ui.nav = function(opt) {
 		init_depth_for_row(row, parent_row ? parent_row.depth + 1 : 0)
 	}
 
-	// row collapsing ---------------------------------------------------------
+	/// row collapsing --------------------------------------------------------
 
 	function set_parent_collapsed(row, collapsed) {
 		if (!row.child_rows)
@@ -2371,7 +2214,7 @@ ui.nav = function(opt) {
 		e.set_collapsed(row, !row.collapsed, recursive)
 	}
 
-	// sorting ----------------------------------------------------------------
+	/// sorting ---------------------------------------------------------------
 
 	e.compare_types = function(v1, v2) {
 		// nulls come first.
@@ -2455,7 +2298,7 @@ ui.nav = function(opt) {
 		return rows.sort(cmp)
 	}
 
-	// changing the sort order ------------------------------------------------
+	/// changing the sort order -----------------------------------------------
 
 	function set_order_by_map(order_by, order_by_map) {
 		order_by_map.clear()
@@ -2521,7 +2364,7 @@ ui.nav = function(opt) {
 		update_parts({row_order: true})
 	}
 
-	// filtering --------------------------------------------------------------
+	/// filtering -------------------------------------------------------------
 
 	// expr: [bin_oper, expr1, ...] | [un_oper, expr] | [bin_oper, col, val]
 	e.expr_filter = function(expr) {
@@ -2732,7 +2575,7 @@ ui.nav = function(opt) {
 		return rows.filter(e.expr_filter(expr))
 	}
 
-	// get/set cell & row state (storage api) ---------------------------------
+	/// get/set cell & row state (storage api) --------------------------------
 
 	let next_key_index = 0
 	let key_index = {} // {key->i}
@@ -2853,7 +2696,7 @@ ui.nav = function(opt) {
 	}
 	}
 
-	// get/set cell vals and cell & row state ---------------------------------
+	/// get/set cell vals and cell & row state --------------------------------
 
 	e.cell_val        = (row, col) => row[fld(col).val_index]
 	e.cell_input_val  = (row, col) => e.cell_state(row, fld(col), 'input_val', e.cell_val(row, col))
@@ -2861,7 +2704,7 @@ ui.nav = function(opt) {
 	e.cell_errors     = (row, col, with_messages) => {
 		let field = fld(col)
 		let errors = e.cell_state(row, field, 'errors')
-		if (errors == errors_no_messages && with_messages != false) {
+		if ((!errors || errors == errors_no_messages) && with_messages != false) {
 			let val = e.cell_input_val(row, field)
 			errors = e.validate_cell(field, val)
 			e.set_cell_state_for(row, field, 'errors', errors)
@@ -3089,7 +2932,7 @@ ui.nav = function(opt) {
 		return e.end_set_state()
 	}
 
-	// responding to val changes ----------------------------------------------
+	/// responding to val changes ---------------------------------------------
 
 	e.do_update_val = function(v, ev) {
 		if (ev && ev.input == e)
@@ -3106,7 +2949,7 @@ ui.nav = function(opt) {
 		e.focus_cell(ri, true, 0, 0, focus_opt)
 	}
 
-	// editing ----------------------------------------------------------------
+	/// editing ---------------------------------------------------------------
 
 	// the edited cell is the focused cell; the text and caret belong to the
 	// editor widget drawn under e.editor_id.
@@ -3115,7 +2958,7 @@ ui.nav = function(opt) {
 	e.editor_id = null
 	e.edit_sel_i = 0
 	e.edit_sel_len = 1/0
-	e.edit_text = null
+	e.want_dropdown_open = false
 
 	// cells that act on a click instead of opening an editor.
 	e.cell_clickable = function(row, field) {
@@ -3139,8 +2982,9 @@ ui.nav = function(opt) {
 	// sel_i, sel_len: in ui.select_text() terms, all of it by default.
 	e.enter_edit = function(opt) {
 		if (e.editing) {
-			if (e.focused_field.has_editor && opt?.open_popup != false)
-				e.focused_field.open_dropdown(e.editor_id)
+			if (e.focused_field.has_editor && (opt?.open_popup != false
+					|| e.focused_field.edits_in_popup))
+				e.focused_field.open_dropdown?.(e.editor_id)
 			return true
 		}
 		let row = e.focused_row
@@ -3162,10 +3006,8 @@ ui.nav = function(opt) {
 		let editor_type = field.lookup_rowset_name || field.type
 		e.editor_id = editor_type + '.editor'
 		if (field.has_editor) {
-			let v = e.cell_input_val(row, field)
-			e.edit_text = v == null ? '' : field.to_input(v)
-			if (opt?.open_popup != false)
-				field.open_dropdown(e.editor_id)
+			e.want_dropdown_open = opt?.open_popup != false
+				|| !!field.edits_in_popup
 			// by key: that is what focuses the input element. a click can't, the
 			// input only appears a frame later.
 			if (opt?.focus !== false)
@@ -3185,7 +3027,7 @@ ui.nav = function(opt) {
 		e.editing = false
 		e.advance_on_exit = false
 		e.editor_id = null
-		e.edit_text = null
+		e.want_dropdown_open = false
 		if (ev && ev.cancel) {
 			if (row && field)
 				e.revert_cell(row, field, ev)
@@ -3195,7 +3037,7 @@ ui.nav = function(opt) {
 		if (take_focus)
 			ui.focus(e.id)
 		if (field?.has_editor)
-			field.close_dropdown(editor_id)
+			field.close_dropdown?.(editor_id)
 	}
 
 	e.revert_cell = function(row, field, ev) {
@@ -3227,19 +3069,11 @@ ui.nav = function(opt) {
 				e.set_cell_val(row, field, null, ev)
 	}
 
-	// cell lookup display val ------------------------------------------------
+	/// cell lookup display val -----------------------------------------------
 
 	function init_field_lookup_nav(field) {
 		if (field.lookup_rowset_name) {
-			field.lookup_nav = ui.shared_nav({
-				rowset_name     : field.lookup_rowset_name,
-				is_picker       : true,
-				can_focus_cells : false,
-				can_add_rows    : false,
-				can_remove_rows : false,
-				can_change_rows : false,
-				can_move_rows   : false,
-			})
+			field.lookup_nav = lookup_nav(field.lookup_rowset_name)
 			field.lookup_nav.ref()
 		}
 	}
@@ -3280,9 +3114,9 @@ ui.nav = function(opt) {
 	// were unknown can become known and the other way around.
 	*/
 
-	// cell value multi-target rendering --------------------------------------
+	/// cell value multi-target rendering -------------------------------------
 
-	function build_null_lookup_val(row, field, mode) {
+	function build_null_lookup_val(row, field, mode, fg, full_width) {
 		if (!row || !field.null_lookup_col) return
 		let nf = e.all_fields_map[field.null_lookup_col]  ; if (!nf || !nf.lookup_cols) return
 		let ln = nf.lookup_nav                            ; if (!ln) return
@@ -3290,7 +3124,7 @@ ui.nav = function(opt) {
 		let ln_row = e.lookup_val(row, nf, nv)            ; if (!ln_row) return
 		let dcol = field.null_display_col ?? field.name
 		let df = ln.all_fields_map[dcol]                  ; if (!df) return
-		return ln.build_cell(ln_row, df, mode)
+		return ln.build_cell(ln_row, df, mode, fg, full_width)
 	}
 
 	// a lookup cell builds the display field's value, so the column aligns
@@ -3323,24 +3157,24 @@ ui.nav = function(opt) {
 	}
 	}
 
-	e.build_val = function(row, field, v, mode, full_width) {
+	e.build_val = function(row, field, v, mode, fg, full_width) {
 
 		if (v == null) {
-			let s = build_null_lookup_val(row, field, mode)
+			let s = build_null_lookup_val(row, field, mode, fg, full_width)
 			if (s) return s
 
 			if (field.build_null)
-				return field.build_null(mode, row)
+				return field.build_null(mode, fg, row)
 
 			s = field.null_text
-			if (s) return field.build_text(s, mode)
+			if (s) return field.build_text(s, mode, fg)
 
 			return
 		}
 
 		if (v === '') {
 			if (field.empty_text)
-				return field.build_text(field.empty_text, mode)
+				return field.build_text(field.empty_text, mode, fg)
 			return
 		}
 
@@ -3348,19 +3182,20 @@ ui.nav = function(opt) {
 		if (ln_row) {
 			let df = lookup_display_field(field)
 			if (df)
-				return field.lookup_nav.build_cell(ln_row, df, mode)
+				return field.lookup_nav.build_cell(ln_row, df, mode, fg, full_width)
 		}
 
-		return field.build(v, mode, row, full_width)
+		return field.build(v, mode, fg, row, full_width)
 	}
 
-	e.build_cell = function(row, field, mode) {
-		return e.build_val(row, field, e.cell_input_val(row, field), mode)
+	e.build_cell = function(row, field, mode, fg, full_width) {
+		return e.build_val(row, field, e.cell_input_val(row, field),
+			mode, fg, full_width)
 	}
 
 	e.cell_text_val = e.build_cell
 
-	// row adding & removing --------------------------------------------------
+	/// row adding & removing -------------------------------------------------
 
 	e.insert_rows = function(arg1, ev) {
 		ev = ev || empty
@@ -3701,7 +3536,7 @@ ui.nav = function(opt) {
 		return true
 	}
 
-	// row moving -------------------------------------------------------------
+	/// row moving ------------------------------------------------------------
 
 	e.expanded_child_row_count = function(ri) { // expanded means visible.
 		let n = 0
@@ -3890,7 +3725,7 @@ ui.nav = function(opt) {
 		e.start_move_selected_rows(ev).finish_down()
 	}
 
-	// ajax requests ----------------------------------------------------------
+	/// ajax requests ---------------------------------------------------------
 
 	let requests
 
@@ -3910,14 +3745,15 @@ ui.nav = function(opt) {
 		return !!(requests && requests.size)
 	}
 
-	// loading ----------------------------------------------------------------
+	/// loading ---------------------------------------------------------------
 
 	// compress param_vals into a value array for single-key pks.
 	function param_vals_filter() {
 		if (!e.param_vals)
 			return
-		if (e.params.size == 1) {
-			let col = e.params.get(e.params.first_key)[0]
+		let cols = keys(e.param_vals[0])
+		if (cols.length == 1) {
+			let col = cols[0]
 			return json(e.param_vals.map(vals => vals[col]))
 		} else {
 			return json(e.param_vals)
@@ -3971,6 +3807,12 @@ ui.nav = function(opt) {
 		}
 
 		e.abort_loading()
+
+		let rs = ui.rowsets[rowset_name]
+		if (rs && (e.wait ?? rs.wait) == null) {
+			set_rowset(rs)
+			return
+		}
 
 		let req = nav_ajax(assign_opt({
 			rowset_name: rowset_name,
@@ -4041,18 +3883,22 @@ ui.nav = function(opt) {
 
 	// e.prop('focus_state', {slot: 'user'})
 
-	function load_success(ev) {
-		let [rs] = ev.args
-		if (this.allow_diff_merge && e.diff_merge(rs))
-			return
+	function set_rowset(rs) {
 		rowset = rs
 		e._rowset = rs // for inspection
 		//update_subs('reset')
 		update_parts({reset: true})
+	}
+
+	function load_success(ev) {
+		let [rs] = ev.args
+		if (this.allow_diff_merge && e.diff_merge(rs))
+			return
+		set_rowset(rs)
 		ui.animate()
 	}
 
-	// saving changes ---------------------------------------------------------
+	/// saving changes --------------------------------------------------------
 
 	function row_changed(row) {
 		if (row.nosave)
@@ -4302,7 +4148,7 @@ ui.nav = function(opt) {
 		rows_moved = false
 	}
 
-	// row (de)serialization --------------------------------------------------
+	/// row (de)serialization -------------------------------------------------
 
 	e.do_save_row = return_true // stub
 
@@ -4435,7 +4281,7 @@ ui.nav = function(opt) {
 		e.row_states = e.serialize_all_row_states()
 	}
 
-	// responding to notifications from the server ----------------------------
+	/// responding to notifications from the server ---------------------------
 
 	e.notify = function(type, message, ...args) {
 		e.announce('notify', type, message, ...args)
@@ -4452,7 +4298,7 @@ ui.nav = function(opt) {
 		e.do_update_load_progress(0)
 	}
 
-	// quick-search -----------------------------------------------------------
+	/// quick-search ----------------------------------------------------------
 
 	function* qs_reach_row(start_row, ri_offset) {
 		ri_offset ??= 0
@@ -4507,7 +4353,7 @@ ui.nav = function(opt) {
 
 	}
 
-	// picker protocol --------------------------------------------------------
+	/// picker protocol -------------------------------------------------------
 
 	// e.prop('row_display_val_template', {private: true})
 	// e.prop('row_display_val_template_name', {attr: 'row_display_val_template'})
@@ -4521,10 +4367,19 @@ ui.nav = function(opt) {
 		return e.build_cell(row, field, mode)
 	}
 
-	update_parts({reset: true})
-	assign(e, opt)
+	/// init ------------------------------------------------------------------
 
+	// TODO: remove this
+	update_parts({reset: true})
+
+	assign(e, opt)
 	assert(e.rowset_name, 'rowset_name required')
+
+	let saved = ui.saved_state[e.id]
+	if (saved?.cols !== undefined)
+		e.cols = saved.cols
+	if (saved?.group_by !== undefined)
+		e.group_by = saved.group_by
 
 	if (!ui.rowsets[e.rowset_name]) {
 		init_rowset_events()
@@ -4536,7 +4391,7 @@ ui.nav = function(opt) {
 	return e
 }
 
-// validation rules ----------------------------------------------------------
+/// validation rules ---------------------------------------------------------
 
 function field_name(e) {
 	return display_name(e.label || e.name || S('value', 'value'))
@@ -4551,9 +4406,8 @@ function field_value(e, v) {
 	return str(v)
 }
 
-add_validation_rule({
+ui.add_validation_rule({
 	name: 'pk',
-	props: 'pk',
 	applies  : (e) => e.pk,
 	validate : (e, row) => {
 		let rows = e.lookup(e.pk, e.cell_input_vals(row, e.pk)).filter(row1 => row1 != row)
@@ -4565,10 +4419,8 @@ add_validation_rule({
 			e.pk_fields.map(field => field.label).join(' + ')),
 })
 
-add_validation_rule({
+ui.add_validation_rule({
 	name     : 'lookup',
-	props    : 'lookup_rowset_name lookup_cols local_cols',
-	vprops   : 'input_value',
 	applies  : (field) => field.lookup_nav,
 	// TODO: multi-col lookup
 	validate : (field, v) => !!field.nav.lookup_val(null, field, v),
@@ -4578,18 +4430,15 @@ add_validation_rule({
 		'{0} value unknown', field_name(field)),
 })
 
-// field type definitions ----------------------------------------------------
+//// GRID EDITORS ------------------------------------------------------------
 
 /*
 
-Displaying a value:
+Displaying a grid value:
 
-	to_text        : f(v) -> s             display value
-	to_input       : f(v) -> s             value as editable text
-	from_input     : f(s) -> v             parse editable text
-	build          : f(v, mode, [row], [full_width]) -> true|s
-	build_text     : f(s, [mode], [row], [full_width]) -> true|s
-	build_null     : f([mode], [row]) -> true|s
+	build          : f(v, mode, [fg], [row], [full_width]) -> true|s
+	build_text     : f(s, [mode], [fg], [row], [full_width]) -> true|s
+	build_null     : f([mode], [fg], [row]) -> true|s
 
 	mode: falsy = return the value as plain text.
 	mode: truty = build value widget.
@@ -4605,10 +4454,13 @@ Editing a value:
 	build_editor   : f(id, v, pad_l, pad_r, h) -> v
 	edits_in_popup : build_editor builds a popup, so the cell keeps drawing
 	                 the value under it.
-	editor_value   : f(id, v) -> v   what the editor has made of v so far.
-	                 on every build pass in which dropdown_closed returns
-	                 nothing, the grid calls this and writes the result to
-	                 the cell when it differs from what the cell holds.
+	editor_value   : f(id, v) -> v   what the picker has made of v so far.
+	                 only editors with a picker implement it: the grid calls
+	                 it once per frame and writes the result to the cell when
+	                 it differs from what the cell holds. typed text doesn't
+	                 come through here: the grid reads it from the input box
+	                 at the start of its update and writes it to the cell
+	                 there.
 
 	focus_editor         : f(id, sel_i, sel_len)
 	editor_selection     : f(id) -> [i, len]
@@ -4619,131 +4471,56 @@ Dropdown editors:
 	open_dropdown  : f(id)
 	close_dropdown : f(id)
 	toggle_dropdown: f(id)
-	dropdown_closed: f(id) -> ev   the grid ends the edit when this returns
-	                 an event, cancelling it unless ev.picked.
+	dropdown_open  : f(id) -> t|f  is the picker up.
+	dropdown_picked: f(id) -> t|f  did the picker close in this pass, and did
+	                 that close come from picking.
+	                 the grid ends the edit when the picker goes from open to
+	                 closed, cancelling it unless it was picked.
 
 */
 
-{
-
 // icons drawn by field types, not by any one widget, so they live here
 // rather than in the grid's own icon aliases.
-ui.icon_def('check'        , 'tabler', '\uea5e')
 ui.icon_def('calendar'     , 'tabler', '\uea53')
 ui.icon_def('map_pin'      , 'tabler', '\ueae8')
 ui.icon_def('box_unchecked', 'tabler', '\ueb2c')
 ui.icon_def('box_checked'  , 'tabler_filled', '\uf76d')
-//ui.icon_def('box_checked'  , 'tabler', '\ueb28')
 
-assign(all_field_types, {
-	type: 'text',
-	default: null,
-	w: 100,
-	min_w: 22,
-	max_w: 2000,
-	align: 'left',
-	not_null: false,
-	required: false,
-	sortable: true,
-	movable: true,
-	groupable: true,
-	maxlen: 256,
-	null_text : S('null_text', ''),
-	empty_text: S('empty_text', 'empty text'),
-	builds_text: true,
-	has_editor: true,
-})
-
-all_field_types.to_text = function(v) {
-	return String(v)
-}
-
-// to_input(v) -> s, inverse of from_input(s) -> v. filesize, count and date
-// override it: from_input() can't read back a magnitude suffix or a timeago text.
-all_field_types.to_input = function(v) {
-	return this.to_text(v)
-}
-
-// what the nav's edit text means as a value: the parse, or the text itself
-// when it doesn't parse, same as when loading.
-function text_val(field, s) {
-	let v = field.from_input ? field.from_input(s) : s
-	return v === undefined ? s : v
-}
-
-// build the editor's input box: hand it the nav's edit text, refreshed when v
-// moved on its own, and take back what the user has typed. -> v
-function build_text_editor(field, id, v, fr, align, valign, max_w, w, h) {
-	let e = field.nav
-	let s0 = v == null ? '' : field.to_input(v)
-	if (text_val(field, e.edit_text) !== v)
-		e.edit_text = s0
-	e.edit_text = ui.text_editable(id, e.edit_text,
-		fr, align ?? field.align, valign ?? 'c', max_w, w, h)
-}
-
-function text_editor_value(field, id, v) {
-	let s = ui.state_of(id)
-	if (!s || s.text == null)
-		return v
-	let s0 = v == null ? '' : field.to_input(v)
-	return s.text == s0 ? v : text_val(field, s.text)
-}
-
-all_field_types.focus_editor = function(id, sel_i, sel_len) {
+ui.all_field_types.focus_editor = function(id, sel_i, sel_len) {
 	ui.focus(id, true)
 	ui.select_text(id, sel_i, sel_len)
 }
 
-all_field_types.editor_selection = function(id) {
+ui.all_field_types.editor_selection = function(id) {
 	return ui.text_selection(id, this.align == 'right', true)
 }
 
-all_field_types.editor_caret_at_edge = function(id, d) {
+ui.all_field_types.editor_caret_at_edge = function(id, d) {
 	if (this.editor_selection(id)[1] == 1/0) // select-all: both ends are the edge
 		return true
 	let [i, len] = ui.text_selection(id, d > 0)
 	return !len && i == (d < 0 ? 0 : -1)
 }
 
-all_field_types.open_dropdown = function(id) {
-	ui.fire(id, 'open')
-}
-
-all_field_types.close_dropdown = function(id) {
-	ui.fire(id, 'close')
-}
-
-all_field_types.toggle_dropdown = function(id) {
-	ui.fire(id, 'toggle')
-}
-
-all_field_types.dropdown_closed = function(id) {
-	return ui.consume(id, 'closed')
-}
-
 // same call as build_text(), so the cell doesn't shift on entering edit.
-all_field_types.build_editor = function(id, v, pad_l, pad_r, h) {
+ui.all_field_types.build_editor = function(id, v, pad_l, pad_r, h) {
 	ui.p(pad_l, 0, pad_r, 0)
-	build_text_editor(this, id, v, 0, this.align, 'c', null)
+	ui.text_editable(id, v, 0, this.align, 'c', null, null, null, this)
 }
 
-all_field_types.editor_value = function(id, v) {
-	return text_editor_value(this, id, v)
-}
+ui.all_field_types.fixed_width = 0
 
-all_field_types.fixed_width = 0
-
-all_field_types.build_text = function(s, mode, row, full_width) {
+ui.all_field_types.build_text = function(s, mode, fg, row, full_width) {
 	if (!mode)
 		return s
+	ui.color(fg)
 	ui.text('', s, 0, this.align, 'c', full_width ? null : 0)
 	return true
 }
 
-all_field_types.build = function(v, mode, row, full_width) {
+ui.all_field_types.build = function(v, mode, fg, row, full_width) {
 	let s = this.to_text(v)
-	return this.build_text(s, mode, row, full_width)
+	return this.build_text(s, mode, fg, row, full_width)
 }
 
 // an editor that is a dropdown has no caret to move within.
@@ -4758,141 +4535,67 @@ dropdown_editor.editor_caret_at_edge = function(id, d) {
 	return true
 }
 
-// text ----------------------------------------------------------------------
-
-// the default type: all its behavior comes from all_field_types.
-field_types.text = {}
-
-// passwords -----------------------------------------------------------------
-
-field_types.password = {}
-
-// numbers -------------------------------------------------------------------
-
-let number = {align: 'right', decimals: 0, scale: 1, is_number: true}
-field_types.number = number
-
-number.from_input = function(s) {
-	let x = num(s)
-	return x != null ? x * this.scale : x
+dropdown_editor.open_dropdown = function(id) {
+	ui.set_dropdown_open(id, true)
 }
 
-number.to_text = function(s) {
-	let x = num(s)
-	return x != null ? dec(x / this.scale, this.decimals) : s
+dropdown_editor.close_dropdown = function(id) {
+	ui.set_dropdown_open(id, false)
 }
 
-// file sizes ----------------------------------------------------------------
-
-let filesize = assign({}, number)
-field_types.filesize = filesize
-
-// small means the value displays as 0 at this field's magnitude_decimals
-// and magnitude, e.g. an 800-byte value forced to display in MB.
-filesize.is_small = function(x) {
-	if (x == null)
-		return true
-	let min = this.gray_min
-	if (min != null)
-		return x < min
-	return num(this.to_text(x)) === 0
+dropdown_editor.toggle_dropdown = function(id) {
+	ui.set_dropdown_open(id, !ui.dropdown_open(id))
 }
 
-filesize.to_text = function(s) {
-	let x = num(s)
-	if (x == null)
-		return s
-	let mag = this.magnitude
-	let dec = this.magnitude_decimals || 0
-	return format_kbytes(x, dec, mag)
+dropdown_editor.dropdown_open = function(id) {
+	return ui.dropdown_open(id)
 }
 
-// from_input() doesn't read the magnitude suffix back.
-filesize.to_input = number.to_text
+dropdown_editor.dropdown_closed = function(id) {
+	return ui.dropdown_closed(id)
+}
 
-filesize.build = function(x, mode) {
+dropdown_editor.dropdown_picked = function(id) {
+	return ui.dropdown_picked(id)
+}
+
+let filesize = ui.field_types.filesize
+
+filesize.build = function(x, mode, fg) {
 	let s = this.to_text(x)
 	if (mode) {
-		if (this.is_small(x))
-			ui.color('label')
-		return this.build_text(s, mode)
+		// TODO: requires a faint color AND a scope
+		// if (this.is_small(x))
+		//	ui.color('label')
+		return this.build_text(s, mode, fg)
 	}
 	return s
 }
 
-filesize.scale_base = 1024
-filesize.scales = [1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500]
-
-// counts --------------------------------------------------------------------
-
-let count = assign({}, number)
-field_types.count = count
-
-count.to_text = function(s) {
-	let x = num(s)
-	if (x == null)
-		return s
-	let mag = this.magnitude
-	let dec = this.magnitude_decimals || 0
-	return format_kcount(x, dec, mag)
-}
-
-count.to_input = number.to_text
-
-// dates ---------------------------------------------------------------------
-
-let date = {
-	align: 'right',
-	is_time: true,
-	w: 80,
-	precision: 'd',
-	min: parse_date('1000-01-01 00:00:00', 'SQL'),
-	max: parse_date('9999-12-31 23:59:59', 'SQL'),
-	from_input: function(s) { return parse_date(s, null, true, this.precision) },
-}
-field_types.date = date
-
-date.to_text = function(v) {
-	if (!isnum(v)) // invalid
-		return str(v)
-	if (this.timeago)
-		return format_timeago(v)
-	return format_date(v, null, this.precision)
-}
-
-// timeago text doesn't parse back.
-date.to_input = function(v) {
-	if (!isnum(v)) // invalid
-		return str(v)
-	return format_date(v, null, this.precision)
-}
-
-let dt = assign({}, date, {precision: 'm', w: 140})
-field_types.datetime = dt
-
-// timestamps ----------------------------------------------------------------
-
-let ts = assign({}, date)
-field_types.time = ts
-
-ts.has_time = true
-ts.precision = 's'
-ts.w = 160
+let date = ui.field_types.date
 
 date.open_dropdown = function(id) {
-	ui.fire(id+'.calendar', 'open')
+	ui.set_dropdown_open(id+'.calendar', true)
 }
 
 date.close_dropdown = function(id) {
-	ui.fire(id+'.calendar', 'close')
+	ui.set_dropdown_open(id+'.calendar', false)
 }
 
 date.toggle_dropdown = function(id) {
-	ui.fire(id+'.calendar', 'toggle')
+	ui.set_dropdown_open(id+'.calendar', !ui.dropdown_open(id+'.calendar'))
+}
+
+date.dropdown_open = function(id) {
+	return ui.dropdown_open(id+'.calendar')
 }
 
 date.dropdown_closed = function(id) {
-	return ui.consume(id+'.calendar', 'closed')
+	return ui.dropdown_closed(id+'.calendar')
+}
+
+date.dropdown_picked = function(id) {
+	return ui.dropdown_picked(id+'.calendar')
 }
 
 date.build_editor = function(id, v, pad_l, pad_r, h) {
@@ -4902,21 +4605,24 @@ date.build_editor = function(id, v, pad_l, pad_r, h) {
 	ui.end_stack()
 
 	ui.popup('', 'overlay', editor_target_i, 'irs', 's')
-		ui.h(0, ui.sp05())
+
+	let is_open = ui.dropdown(calendar_id, null, this.nav.want_dropdown_open)
+	if (!is_open && ui.focus_inside(picker_id))
+		ui.focus(id)
+	let opened = ui.dropdown_opened(calendar_id)
+
+		ui.stack(id, 1, 's', 's')
 			ui.bb('input', 'focused', 'b', 'light')
-			ui.p(pad_l, 0, 0, 0)
-			ui.icon(calendar_id, 'calendar', 0, 'l', 'c', null, null, h)
-			ui.p(0, 0, pad_r, 0)
-			build_text_editor(this, id, v, 1, this.align, 'c')
+			ui.h(0, ui.sp05())
+				ui.p(pad_l, 0, 0, 0)
+				ui.icon(calendar_id, 'calendar', 0, 'l', 'c', null, null, h)
+				ui.p(0, 0, pad_r, 0)
+				ui.text_editable(id, v, 1, this.align, 'c', null, null, null, this)
+			ui.end_h()
+		ui.end_stack()
 
-		ui.end_h()
-	ui.end_popup()
-
-	let is_open = ui.dropdown(calendar_id, 'b',
-		this.align == 'right' ? 'cs' : 'cs', true, false)
-	let opened = ui.consume(calendar_id, 'opened')
-
-	ui.dropdown_picker()
+	ui.dropdown_picker(calendar_id, 'b',
+		this.align == 'right' ? 'cs' : 'cs')
 
 		if (is_open) {
 			if (opened) {
@@ -4935,50 +4641,17 @@ date.build_editor = function(id, v, pad_l, pad_r, h) {
 			ui.resizer(resize_id, null, null, 'y')
 		}
 
-	ui.end_dropdown()
+	ui.end_dropdown(calendar_id)
+
+	ui.end_popup()
 }
 
 date.editor_value = function(id, v) {
-	v = text_editor_value(this, id, v)
-	let s = ui.state_of(id+'.calendar.picker')
-	if (s && s.day !== s.prev_day)
-		return s.day
-	return v
+	let day = ui.input_value(id+'.calendar.picker')
+	return day !== undefined ? day : v
 }
 
-// timeofday (MySQL TIME type) -----------------------------------------------
-
-let td = {
-	align: 'center',
-	is_timeofday: true,
-	from_input: function(s) { return parse_timeofday(s, true, this.precision) },
-}
-field_types.timeofday = td
-
-td.to_text = function(v) {
-	if (!isnum(v)) // invalid
-		return str(v)
-	return format_timeofday(v, this.precision)
-}
-
-// duration ------------------------------------------------------------------
-
-let d = {align: 'right', is_duration: true}
-field_types.duration = d
-
-d.to_text = function(v) {
-	if (!isnum(v)) return v // invalid
-	return format_duration(v, this.duration_format)
-}
-
-// booleans ------------------------------------------------------------------
-
-// no editor: the value is toggled by click and space, and the cell keeps
-// building itself while an edit is carried through it.
-let bool = {align: 'center', min_w: 20, w: 20, is_bool: true,
-	builds_text: false, has_editor: false}
-field_types.bool = bool
-
+let bool = ui.field_types.bool
 
 bool.build_null = function(mode) {
 	if (mode) {
@@ -4992,7 +4665,7 @@ bool.build_null = function(mode) {
 
 // an editable cell shows the box so that it reads as something to click,
 // a readonly one only marks the true ones.
-bool.build = function(v, mode, row) {
+bool.build = function(v, mode, fg, row) {
 	if (!isbool(v))
 		return bool.build_null.call(this, mode)
 	if (!mode)
@@ -5001,20 +4674,16 @@ bool.build = function(v, mode, row) {
 		row && this.nav.can_change_val(row, this)
 			? (v ? 'box_checked' : 'box_unchecked')
 			: (v ? 'check' : null)
-	if (icon)
+	if (icon) {
+		ui.color(fg)
 		ui.icon('', icon, 0, this.align, 'c')
+	}
 }
 
 // enums ---------------------------------------------------------------------
 
-let enm = {}
-field_types.enum = enm
+let enm = ui.field_types.enum
 assign(enm, dropdown_editor)
-
-enm.to_text = function(v) {
-	let s = this.enum_labels ? this.enum_labels[v] : undefined
-	return s !== undefined ? s : v
-}
 
 enm.edits_in_popup = true
 
@@ -5029,9 +4698,8 @@ enm.build_editor = function(id, v, pad_l, pad_r, h) {
 	// the list is up for as long as the edit is. anchored on the side v is
 	// aligned to, so v stays put when the list makes the popup wider than
 	// the cell.
-	let open = ui.dropdown(id, 'b',
-		this.align == 'right' ? ']s' : '[s')
-	let opened = ui.consume(id, 'opened')
+	ui.focusable(id)
+	let open = ui.dropdown(id, null, this.nav.want_dropdown_open)
 
 		if (open) {
 			ui.p(pad_l, 0, pad_r, 0)
@@ -5040,61 +4708,55 @@ enm.build_editor = function(id, v, pad_l, pad_r, h) {
 			ui.end_stack()
 		}
 
-	ui.dropdown_picker()
+	ui.dropdown_picker(id, 'b', this.align == 'right' ? ']s' : '[s')
 
 		if (open) {
-			let s = ui.state(picker_id)
 			let vals = words(this.enum_values) // 'v1 ...' or ['v1', ...]
-			if (opened)
-				// the cell's own box: rows as tall as the cell, text where the
-				// cell put it.
-				s.labels = vals.map(v => this.to_text(v))
-			ui.list(picker_id, s.labels, max(0, vals.indexOf(v)),
+			ui.list(picker_id, vals, v, this,
 				0, 's', 's', this.align, 'c', 0,
 				null, null, pad_l, pad_r, 0, h)
 		}
 
-	ui.end_dropdown()
+	ui.end_dropdown(id)
 }
 
 enm.editor_value = function(id, v) {
-	let i = ui.state_of(id+'.picker', 'focused_i')
-	if (i == null)
+	let value = ui.value(id+'.picker')
+	if (value == null)
 		return v
-	return words(this.enum_values)[i] ?? v
+	return value
 }
 
 // lookup dropdowns ----------------------------------------------------------
 
 // editor for a field with a lookup nav, assigned by init_field: a lookup can
 // be on a field of any type, so it can't be a field type of its own.
-lookup_editor = assign({}, dropdown_editor)
+let lookup_editor = assign({}, dropdown_editor)
 
 lookup_editor.edits_in_popup = true
 
 // the lookup nav's field whose value this field stores. multi-col lookups
 // have no single value to pick, so they have none.
-function lookup_val_field(field) {
-	let ln = field.lookup_nav
+function lookup_val_field(field, ln = field.lookup_nav) {
 	let col = field.lookup_cols || ln.pk
 	if (col == null || col.includes(' ')) return
 	return ln.optfld(col)
 }
 
-function can_pick_lookup_val(field) {
-	return field.lookup_nav.ready
-		&& lookup_val_field(field)
-		&& lookup_display_field(field)
+function can_pick_lookup_val(field, ln = field.lookup_nav) {
+	return ln.ready
+		&& lookup_val_field(field, ln)
+		&& lookup_display_field(field, ln)
 }
 
 function type_editor(field) {
-	return field_types[field.type] || empty
+	return ui.field_types[field.type] || empty
 }
 
 lookup_editor.build_editor = function(id, v, pad_l, pad_r, h) {
 
 	if (!can_pick_lookup_val(this)) {
-		let f = type_editor(this).build_editor || all_field_types.build_editor
+		let f = type_editor(this).build_editor || ui.all_field_types.build_editor
 		f.call(this, id, v, pad_l, pad_r, h)
 		return
 	}
@@ -5102,55 +4764,72 @@ lookup_editor.build_editor = function(id, v, pad_l, pad_r, h) {
 	let ln = this.lookup_nav
 	let picker_id = id+'.picker'
 
-	let open = ui.dropdown(id, 'b')
-	let opened = ui.consume(id, 'opened')
+	ui.focusable(id)
+	let open = ui.dropdown(id, null, this.nav.want_dropdown_open)
 
-	ui.dropdown_picker()
+	ui.dropdown_picker(id, 'b')
 
 		if (open) {
-			// start the picker on v's row, and reveal it once the grid is drawn.
-			if (opened) {
-				let ln_row = this.nav.lookup_val(this.nav.focused_row, this, v)
-				if (ln_row)
-					ln.focus_cell(ln.row_index(ln_row), true)
-			}
+			let ln_row = this.nav.lookup_val(this.nav.focused_row, this, v)
 			let resize_id = id+'.resizer'
-			ui.grid(picker_id, {nav: ln}, 0, 's', 's')
+			ui.grid(picker_id, {nav: ln, value: ln_row ?? null}, 0, 's', 's')
 			ui.resizer(resize_id, ui.em(24), ui.em(12))
 		}
 
-	ui.end_dropdown()
+	ui.end_dropdown(id)
 }
 
 lookup_editor.editor_value = function(id, v) {
 	if (!can_pick_lookup_val(this)) {
-		let f = type_editor(this).editor_value || all_field_types.editor_value
-		return f.call(this, id, v)
+		let f = type_editor(this).editor_value
+		return f ? f.call(this, id, v) : v
 	}
-	if (!ui.state_of(id+'.picker'))
+	let ln_row = ui.input_value(id+'.picker')
+	if (ln_row === undefined)
 		return v
 	let ln = this.lookup_nav
-	let ln_row = ln.focused_row
-	if (!ln_row)
-		return v
-	return ln.cell_val(ln_row, lookup_val_field(this))
+	return ln_row ? ln.cell_val(ln_row, lookup_val_field(this)) : null
 }
 
-// tag lists -----------------------------------------------------------------
+lookup_editor.open_dropdown = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	ui.set_dropdown_open(id, true)
+}
 
-let tags = {}
-field_types.tags = tags
+lookup_editor.close_dropdown = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	ui.set_dropdown_open(id, false)
+}
 
-tags.tags_format = 'words' // words | array
+lookup_editor.toggle_dropdown = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	ui.set_dropdown_open(id, !ui.dropdown_open(id))
+}
 
-tags.to_text = function(v) {
-	return isarray(v) ? v.join(' ') : v
+lookup_editor.dropdown_open = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	return ui.dropdown_open(id)
+}
+
+lookup_editor.dropdown_closed = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	return ui.dropdown_closed(id)
+}
+
+lookup_editor.dropdown_picked = function(id) {
+	if (!can_pick_lookup_val(this))
+		return
+	return ui.dropdown_picked(id)
 }
 
 // colors --------------------------------------------------------------------
 
-let color = {}
-field_types.color = color
+let color = ui.field_types.color
 assign(color, dropdown_editor)
 
 color.build = function(v, mode) {
@@ -5165,7 +4844,8 @@ color.build = function(v, mode) {
 color.edits_in_popup = true
 
 color.editor_value = function(id, v) {
-	return ui.state_of(id+'.picker', 'hex') ?? v
+	let hex = ui.input_value(id+'.picker')
+	return hex !== undefined ? hex : v
 }
 
 // a color_picker over v's hex, with a Pick/Cancel row under it: v only
@@ -5174,17 +4854,16 @@ color.build_editor = function(id, v, pad_l, pad_r, h) {
 
 	let picker_id = id+'.picker'
 
-	let open = ui.dropdown(id, 'b')
-	let opened = ui.consume(id, 'opened')
+	ui.focusable(id)
+	let open = ui.dropdown(id, null, this.nav.want_dropdown_open)
 
-	ui.dropdown_picker()
+	ui.dropdown_picker(id, 'b')
 
 		if (open) {
-			let [hue, sat, lum] = opened ? hex_to_hsl(v || '#808080') : []
 			let resize_id = id+'.resizer'
 			ui.p(ui.sp2())
 			ui.v(0, ui.sp1())
-				ui.color_picker(picker_id, hue, sat, lum)
+				ui.color_picker(picker_id, v, this)
 				ui.h(0, ui.sp05(), 'r')
 					ui.default_button(id+'.pick')
 					ui.primary_button(id+'.pick', S('pick', 'Pick'), 0)
@@ -5194,20 +4873,12 @@ color.build_editor = function(id, v, pad_l, pad_r, h) {
 			ui.resizer(resize_id, ui.em(22), null, 'x')
 		}
 
-	ui.end_dropdown()
+	ui.end_dropdown(id)
 }
 
-// percents ------------------------------------------------------------------
+let percent = ui.field_types.percent
 
-// 50% at the default scale of 100 is stored as 5000.
-let percent = assign({}, number, {scale: 100, decimals: 2})
-field_types.percent = percent
-
-percent.to_text = function(p) {
-	return isnum(p) ? dec(p / this.scale, this.decimals) + '%' : p
-}
-
-percent.build = function(p, mode, row, full_width) {
+percent.build = function(p, mode, fg, row, full_width) {
 	let s = this.to_text(p)
 	if (!mode)
 		return s
@@ -5221,69 +4892,41 @@ percent.build = function(p, mode, row, full_width) {
 				ui.bb('bg0')
 			ui.end_stack()
 		ui.end_h()
-		this.build_text(s, mode, row, full_width)
+		this.build_text(s, mode, fg, row, full_width)
 	ui.end_stack()
 }
 
 // icons ---------------------------------------------------------------------
 
-let icon = {align: 'center'}
-field_types.icon = icon
+let icon = ui.field_types.icon
 
-icon.build = function(v, mode) {
+icon.build = function(v, mode, fg) {
 	if (!mode)
 		return this.to_text(v)
+	ui.color(fg)
 	ui.icon('', v, 0, this.align, 'c')
 }
 
-// columns -------------------------------------------------------------------
-
-let col = {}
-field_types.col = col
-
-// google maps places --------------------------------------------------------
-
-let place = {}
-field_types.place = place
+let place = ui.field_types.place
 
 // place vals are {place_id:, description:} or a plain description string.
-place.build = function(v, mode, row, full_width) {
+place.build = function(v, mode, fg, row, full_width) {
 	let place_id = isobject(v) && v.place_id
 	let descr = isobject(v) ? v.description : v || ''
 	if (!mode)
 		return descr
-	ui.color(place_id ? 'text' : 'label')
+	// TODO: needs scope
+	// ui.color(place_id ? 'text' : 'label')
 	ui.h(0, ui.sp05())
+		ui.color(fg)
 		ui.icon('', 'map_pin', 0, this.align, 'c')
-		this.build_text(descr, mode, row, full_width)
+		this.build_text(descr, mode, fg, row, full_width)
 	ui.end_h()
-}
-
-// URLs ----------------------------------------------------------------------
-
-let url = {}
-field_types.url = url
-
-// phone numbers -------------------------------------------------------------
-
-let phone = {}
-field_types.phone = phone
-
-// emails --------------------------------------------------------------------
-
-let email = {}
-field_types.email = email
-
-email.validator_email = {
-	validate : (e, v) => v.includes('@'),
-	error    : (e, v) => S('validation_error_email', 'Not a valid email.'),
-	rule     : (e) => S('validation_rule_email', 'Email must be valid.'),
 }
 
 // buttons -------------------------------------------------------------------
 
-let btn = {align: 'center', readonly: true}
-field_types.button = btn
+let btn = ui.field_types.button
 
 // TODO: btn.build, and btn.click calling field.action(v, row, field).
 btn.build = function(v, mode) {
@@ -5294,17 +4937,103 @@ btn.click = function() {
 	// TODO
 }
 
-// public_key, secret_key, private_key ---------------------------------------
+//// LOOKUP_INPUT ------------------------------------------------------------
 
-// TODO: these want a mono-font editor: single-line for secret_key,
-// multi-line for public_key and private_key.
-field_types.secret_key  = {}
-field_types.public_key  = {}
-field_types.private_key = {}
+function lookup_input_update(id, s) {
+	s.input_value = undefined
+	let field = s.field
+	let ln = s.lookup_nav
+	let disabled = s.readonly || !can_pick_lookup_val(field, ln)
 
+	ui.dropdown_update(id, s, disabled)
+
+	if (s.opened)
+		s.revert_value = s.value
+	if (s.closed && !s.picked) {
+		s.input_value = s.revert_value
+	} else if (!disabled) {
+		let ln_row = ui.input_value(id+'.picker')
+		if (ln_row !== undefined)
+			s.input_value = ln_row
+				? ln.cell_val(ln_row, lookup_val_field(field, ln)) : null
+	}
+
+	if (!disabled && !field.not_null && ui.focused(id)
+		&& ui.keydown('delete'))
+		s.input_value = null
 }
 
-// reload push-notifications -------------------------------------------------
+function free_lookup_input(s) {
+	s.lookup_nav.unref()
+}
+
+ui.lookup_input = function(id, value, field, fr, min_w, readonly) {
+	let picker_id = id+'.picker'
+	let s = ui.state(id)
+	if (!s.lookup_nav) {
+		s.lookup_nav = lookup_nav(field.lookup_rowset_name)
+		s.lookup_nav.ref()
+		ui.on_free(id, free_lookup_input)
+	}
+	readonly ??= field.readonly
+	s.field = field
+	s.readonly = readonly
+	s = ui.state(id, lookup_input_update)
+	let ln = s.lookup_nav
+
+	ui.stack('', fr, 's', 's', min_w ?? ui.em_input())
+
+	ui.focusable(id)
+	let open = ui.dropdown(id)
+	if (!open && ui.focus_inside(picker_id))
+		ui.focus(id)
+
+	value = ui.set_value(id, s, value, open ? null : field)
+
+	let val_field = lookup_val_field(field, ln)
+	let display_field = lookup_display_field(field, ln)
+	let ln_row = ln.ready && value != null && val_field && display_field
+		&& ln.lookup(val_field.name, [value])[0]
+	let text
+	if (!ln.ready) {
+		text = S('loading', 'loading...')
+	} else if (value == null) {
+		text = null
+	} else if (ln_row) {
+		let display_v = ln.cell_val(ln_row, display_field)
+		text = display_v == null ? null : display_field.to_text(display_v)
+	} else {
+		text = field.to_text(value)
+	}
+
+	if (text != null && ui.focused(id) && ui.keydown('ctrl c'))
+		copy_to_clipboard(text)
+
+		let disabled = readonly || !can_pick_lookup_val(field, ln)
+		let focused = ui.focused(id)
+		let state = disabled
+			? (focused ? 'readonly focused' : 'readonly')
+			: (focused ? 'focused' : null)
+		ui.bb('input', state, 1, 'intense', state)
+		ui.color('text', state)
+		ui.draw_value_row(text, null, null,
+			ui.sp(), ui.em(1), null, null, 'l')
+
+	ui.dropdown_picker(id, 'b')
+
+		if (open) {
+			ui.grid(picker_id, {nav: ln, value: ln_row || null}, 0, 's', 's')
+			ui.resizer(id+'.resizer', ui.em(24), ui.em(12))
+		}
+
+	ui.end_dropdown(id)
+
+	ui.end_stack()
+
+	return value
+}
+
+//// RELOAD PUSH NOTIFICATIONS -----------------------------------------------
 
 let rowset_navs = ui.rowset_navs = {} // {rowset_name -> set(nav)}
 
