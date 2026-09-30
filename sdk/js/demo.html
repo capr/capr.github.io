@@ -46,7 +46,7 @@ ui.set_screen_theme(ui.value('btn_light') ? 'light' : 'dark')
 ui.DEBUG      = ui.value('btn_debug')
 ui.DEBUG_PANE = true
 ui.TUI        = ui.value('btn_tui')
-ui.saved_value('demos_list', 'tabs')
+ui.saved_value('demos_list', 'grid')
 let url_demo = location.search.match('demo=([^&]+)')?.[1]
 if (url_demo)
 	attr(ui.saved_state, 'demos_list').value = url_demo
@@ -684,8 +684,8 @@ ui.end_h()
 if (grid_nav)
 	grid_nav.can_change_rows = !readonly
 
-ui.hvsplit(split_hv, 'grid_config_form_split_'+split_hv)
-	ui.hvsplit(split_vh, 'grid_config_detail_split_'+split_vh)
+ui.hvsplit(split_hv, 'grid_config_form_split_'+split_hv, .25, 'fr', 2)
+	ui.hvsplit(split_vh, 'grid_config_detail_split_'+split_vh, .25, 'fr', 2)
 		ui.grid('grid_config_grid', grid_opt)
 		grid_nav = ui.state_of('grid_config_grid', 'e')
 		if (grid_nav)
