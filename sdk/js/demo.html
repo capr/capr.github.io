@@ -38,7 +38,7 @@ ui.save_unsaved_state = function(saved_state) {
 }
 let demo_toggle_field = ui.create_field({type: 'bool', not_null: true})
 ui.saved_value('btn_light'  , ui.screen_theme() == 'light', demo_toggle_field)
-ui.saved_value('btn_debug'  , true , demo_toggle_field)
+ui.saved_value('btn_debug'  , false, demo_toggle_field)
 ui.saved_value('btn_tui'    , false, demo_toggle_field)
 ui.saved_value('btn_animate', false, demo_toggle_field)
 ui.set_screen_theme(ui.value('btn_light') ? 'light' : 'dark')
@@ -567,7 +567,7 @@ ui.saved_value('grid_config_exit_edit_on_escape', true)
 ui.saved_value('grid_config_validate_on_load', true)
 ui.saved_value('grid_config_readonly', false)
 ui.saved_value('grid_config_label_pos', 'left', grid_config_label_pos_field)
-ui.saved_value('grid_config_split_hv', 'v', grid_config_split_field)
+ui.saved_value('grid_config_split_hv', 'h', grid_config_split_field)
 ui.saved_value('grid_config_rows', 1000, grid_config_rows_field)
 ui.saved_value('grid_config_cols', grid_demo_base_field_count,
 	grid_config_cols_field)
