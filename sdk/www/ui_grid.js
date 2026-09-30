@@ -255,12 +255,14 @@ function init(id, e) {
 
 	function edit_selection() {
 		return e.focused_field.has_editor
-			? e.focused_field.editor_selection(e.editor_id)
+			? e.focused_field.editor_selection(e.editor_id,
+				e.field_align(e.focused_field))
 			: [e.edit_sel_i, e.edit_sel_len]
 	}
 
 	function caret_at_edge(d) {
-		return e.focused_field.editor_caret_at_edge(e.editor_id, d)
+		return e.focused_field.editor_caret_at_edge(e.editor_id, d,
+			e.field_align(e.focused_field))
 	}
 
 	// cross: move along the other axis than the advance_on_enter axis.
@@ -288,6 +290,14 @@ function init(id, e) {
 
 	function field_has_indent(field) {
 		return horiz && field == e.tree_field
+	}
+
+	function sort_icon_w(field) {
+		return field.sortable ? 2 * sp2 : 0
+	}
+
+	function col_min_w(field) {
+		return max(field.min_w * font_size, sort_icon_w(field))
 	}
 
 	function indent_offset(indent) {
@@ -454,12 +464,12 @@ function init(id, e) {
 				ui.p(pad_l, 0, pad_r, 0)
 				if (row_focused && field == e.quicksearch_field)
 					ui.mark_text(0, e.quicksearch_text.length)
-				e.build_val(row, field, input_val, true, fg, full_width)
+				e.build_val(row, field, input_val, true, fg, full_width, align)
 				ui.p(0) // build_val() builds nothing for a value with no text!
 			}
 			if (editing && !build_stage && field.has_editor) {
 				ui.focus_group(true, null, e.editor_id)
-				field.build_editor(e.editor_id, input_val, pad_l, pad_r, h)
+				field.build_editor(e.editor_id, input_val, pad_l, pad_r, h, align)
 				e.want_dropdown_open = false
 				ui.end_focus_group()
 			}
@@ -766,12 +776,13 @@ function init(id, e) {
 		if (hit_zone == 'col_divider') {
 			let field = e.fields[hit_fi]
 			if (ps.drag)
-				ps.w0 = field.w
+				ps.w0 = field.w * font_size
 			if (ps.dragging)
-				field.w = clamp(ps.w0 + ps.dx, field.min_w, field.max_w)
+				field.w = clamp(ps.w0 + ps.dx,
+					col_min_w(field), field.max_w * font_size) / font_size
 			if (ps.drop)
 				e.save_col_w(field)
-			ui.set_cursor('ew-resize')
+			ui.set_cursor('col-resize')
 		}
 
 		// column drag horizontally => start column move
@@ -1458,7 +1469,7 @@ function init(id, e) {
 		line_height = font_size * 1
 		cell_h = round(line_height + 2 * sp + e.cell_border_h_width)
 		header_h = cell_h
-		gcol_w = 80 // group-bar column width
+		gcol_w = ui.em(6) // group-bar column width
 		gcol_h = round(line_height + sp)
 		gcol_gap = 1
 
@@ -1468,7 +1479,8 @@ function init(id, e) {
 
 		cells_w = 0
 		for (let field of e.fields) {
-			let w = clamp(field.w, field.min_w, field.max_w)
+			let w = clamp(field.w * font_size,
+				col_min_w(field), field.max_w * font_size)
 			let cw = w + 2 * sp2
 			if (drag_op != 'col_move')
 				field._x = cells_w
@@ -1600,7 +1612,7 @@ function init(id, e) {
 					let max_min_w = noclip ? null : max(0,
 						field._w
 							- 2 * sp2
-							- (field.sortable ? 2 * sp2 : 0)
+							- sort_icon_w(field)
 					)
 					let dir = e.sort_dir(field)
 					let pri = e.sort_priority(field)
@@ -1679,10 +1691,19 @@ function init(id, e) {
 
 			let cells_h = e.rows.length * cell_h
 			let overflow = e.auto_expand ? 'contain' : 'auto'
-			ui.scrollbox(id+'.cells_scrollbox', 1, overflow, overflow, 's', 's')
-				ui.min_wh(cells_w, cells_h)
-				ui.frame(noop, on_cellview_frame, 0, 'l', 't')
-			ui.end_scrollbox()
+			let resizer_id = id+'.resizer'
+			ui.stack('', 1, 's', 's')
+				ui.sb_max_wh(
+					ui.state_of(resizer_id, 'w') ?? opt.max_w,
+					ui.state_of(resizer_id, 'h') ?? opt.max_h)
+				ui.scrollbox(id+'.cells_scrollbox', 1, overflow, overflow,
+					's', 's')
+					ui.min_wh(cells_w, cells_h)
+					ui.frame(noop, on_cellview_frame, 0, 'l', 't')
+				ui.end_scrollbox()
+				if (opt.resizable)
+					ui.resizer(resizer_id, null, opt.max_w, opt.max_h)
+			ui.end_stack()
 
 			ui.end_focus_group()
 
